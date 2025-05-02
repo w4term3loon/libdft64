@@ -753,24 +753,43 @@ syscall_desc_t syscall_desc[SYSCALL_MAX] = {
     /* __NR_sched_getattr = 315 */
     {4, 0, 1, {0, sizeof(struct sched_attr), 0, 0, 0, 0}, NULL, NULL},
     /* __NR_renameat2 316 */
+    {5, 0, 0, {0, 0, 0, 0, 0, 0}, NULL, NULL},
     /* __NR_seccomp 317 */
+    {3, 0, 0, {0, 0, 0, 0, 0, 0}, NULL, NULL},
     /* __NR_getrandom 318 */
+    {3, 1, 0, {0, 0, 0, 0, 0, 0}, NULL, NULL},
     /* __NR_memfd_create 319 */
+    {2, 0, 0, {0, 0, 0, 0, 0, 0}, NULL, NULL},
     /* __NR_kexec_file_load 320 */
+    {5, 0, 0, {0, 0, 0, 0, 0, 0}, NULL, NULL},
     /* __NR_bpf 321 */
+    {3, 0, 0, {0, 0, 0, 0, 0, 0}, NULL, NULL},
     /* __NR_execveat 322 */
+    {5, 0, 0, {0, 0, 0, 0, 0, 0}, NULL, NULL},
     /* __NR_userfaultfd 323 */
+    {1, 0, 0, {0, 0, 0, 0, 0, 0}, NULL, NULL},
     /* __NR_membarrier 324 */
+    {2, 0, 0, {0, 0, 0, 0, 0, 0}, NULL, NULL},
     /* __NR_mlock2 325 */
+    {3, 0, 0, {0, 0, 0, 0, 0, 0}, NULL, NULL},
     /* __NR_copy_file_range 326 */
+    {6, 0, 0, {0, 0, 0, 0, 0, 0}, NULL, NULL},
     /* __NR_preadv2 327 */
+    {6, 0, 0, {0, 0, 0, 0, 0, 0}, NULL, NULL},
     /* __NR_pwritev2 328 */
+    {6, 0, 0, {0, 0, 0, 0, 0, 0}, NULL, NULL},
     /* __NR_pkey_mprotect 329 */
+    {4, 0, 0, {0, 0, 0, 0, 0, 0}, NULL, NULL},
     /* __NR_pkey_alloc 330 */
+    {2, 0, 0, {0, 0, 0, 0, 0, 0}, NULL, NULL},
     /* __NR_pkey_free 331 */
+    {1, 0, 0, {0, 0, 0, 0, 0, 0}, NULL, NULL},
     /* __NR_statx 332 */
+    {5, 0, 0, {0, 0, 0, 0, 0, 0}, NULL, NULL},
     /* __NR_io_pgetevents 333 */
+    {4, 0, 0, {0, 0, 0, 0, 0, 0}, NULL, NULL},
     /* __NR_rseq 334 */
+    {5, 0, 0, {0, 0, 0, 0, 0, 0}, NULL, NULL},
 #endif // __linux__
 };
 

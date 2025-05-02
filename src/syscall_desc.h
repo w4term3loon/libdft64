@@ -3,7 +3,7 @@
 
 #include "libdft_api.h"
 
-#define SYSCALL_MAX __NR_sched_getattr + 1 /* max syscall number */
+#define SYSCALL_MAX 334 + 1//__NR_sched_getattr + 1 /* max syscall number */
 
 /* system call descriptor */
 typedef struct {
