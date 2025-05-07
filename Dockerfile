@@ -1,13 +1,18 @@
-# docker build -t libdft-image:latest .
+# darwin-arm64 virtualization settings for docker deamon:
+# colima start <my-x86-vm> --arch x86_64 --vm-type qemu --memory 4 --disk 60
+
+# build and run libdft image:
+# docker build --platform linux/amd64 -t libdft-image:latest .
 # docker run -it --rm -v "$(realpath ./):/libdft" --cap-add=SYS_PTRACE --name libdft-dev libdft-image:latest
 
-FROM --platform=linux/amd64 ubuntu:20.04
+ARG BUILD_PLATFORM=linux/amd64
+FROM --platform=${BUILD_PLATFORM} ubuntu:20.04
 
 RUN dpkg --add-architecture i386 && \
     apt-get update && \
     apt-get -y upgrade && \
     apt-get -y install --no-install-recommends \
-        apt-utils \
+        ca-certificates \
         build-essential \
         gcc-multilib \
         g++-multilib \
@@ -26,18 +31,18 @@ ENV PIN_ROOT="${PIN_INSTALL_DIR}/${PIN_TAR_NAME}"
 
 # install pin tool
 RUN mkdir -p ${PIN_INSTALL_DIR} && \
-    echo "downloading pin tool: ${PIN_TAR_NAME}.tar.gz" && \
-    wget -O /tmp/${PIN_TAR_NAME}.tar.gz --no-check-certificate "https://software.intel.com/sites/landingpage/pintool/downloads/${PIN_TAR_NAME}.tar.gz" && \
-    echo "extracting pin tool to ${PIN_INSTALL_DIR}" && \
+    echo "* Downloading pin tool: ${PIN_TAR_NAME}.tar.gz" && \
+    wget -O /tmp/${PIN_TAR_NAME}.tar.gz "https://software.intel.com/sites/landingpage/pintool/downloads/${PIN_TAR_NAME}.tar.gz" && \
+    echo "* Extracting pin tool to ${PIN_INSTALL_DIR}" && \
     tar xzf /tmp/${PIN_TAR_NAME}.tar.gz -C ${PIN_INSTALL_DIR} && \
     rm /tmp/${PIN_TAR_NAME}.tar.gz && \
-    echo "pin tool installed at ${PIN_ROOT}"
+    echo "* Pin tool installed at ${PIN_ROOT}"
 
 # export pin path
 ENV PATH="${PIN_ROOT}:${PATH}"
 
 RUN mkdir -p /libdft
-WORKDIR libdft
+WORKDIR /libdft
 
 COPY ./env.init /opt/
 
