@@ -3,6 +3,7 @@
 #include "libdft_api.h"
 #include "pin.H"
 #include "syscall_hook.h"
+#include "function_hook.h"
 #include <iostream>
 
 VOID TestGetHandler(void *p) {
@@ -75,6 +76,8 @@ int main(int argc, char *argv[]) {
   PIN_AddApplicationStartFunction(EntryPoint, 0);
 
   hook_file_syscall();
+
+  hook_file_function();
 
   PIN_StartProgram();
 

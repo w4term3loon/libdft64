@@ -65,6 +65,14 @@ typedef struct {
   /* 	ADDRINT errno; */       /* error code */
 } syscall_ctx_t;
 
+typedef struct {
+  int nr;                       /* syscall number */
+  ADDRINT arg[SYSCALL_ARG_NUM]; /* arguments */
+  ADDRINT ret;                  /* return value */
+  void *aux;                    /* auxiliary data */
+  /* 	ADDRINT errno; */       /* error code */
+} function_ctx_t;
+
 /* thread context definition */
 typedef struct {
   vcpu_ctx_t vcpu;           /* VCPU context */
