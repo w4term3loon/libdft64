@@ -1,23 +1,46 @@
-FROM ubuntu:20.04
+# docker build -t libdft-image:latest .
+# docker run -it --rm -v "$(realpath ./):/libdft" --cap-add=SYS_PTRACE --name libdft-dev libdft-image:latest
 
-RUN apt-get update \
-    && apt-get -y upgrade \
-    && apt-get -y install build-essential gcc-multilib g++-multilib wget build-essential \
-    && apt-get clean
+FROM --platform=linux/amd64 ubuntu:20.04
 
+RUN dpkg --add-architecture i386 && \
+    apt-get update && \
+    apt-get -y upgrade && \
+    apt-get -y install --no-install-recommends \
+        apt-utils \
+        build-essential \
+        gcc-multilib \
+        g++-multilib \
+        gdb \
+        git \
+        vim \
+        file \
+        wget && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
-ENV PIN_TAR_NAME=pin-3.20-98437-gf02b61307-gcc-linux
-ENV PIN_ROOT=/${PIN_TAR_NAME}
+# pin tool
+ENV PIN_TAR_NAME="pin-3.20-98437-gf02b61307-gcc-linux"
+ENV PIN_INSTALL_DIR="/opt/pin"
+ENV PIN_ROOT="${PIN_INSTALL_DIR}/${PIN_TAR_NAME}"
 
-RUN wget http://software.intel.com/sites/landingpage/pintool/downloads/${PIN_TAR_NAME}.tar.gz \
-    && tar xvf ${PIN_TAR_NAME}.tar.gz
+# install pin tool
+RUN mkdir -p ${PIN_INSTALL_DIR} && \
+    echo "downloading pin tool: ${PIN_TAR_NAME}.tar.gz" && \
+    wget -O /tmp/${PIN_TAR_NAME}.tar.gz --no-check-certificate "https://software.intel.com/sites/landingpage/pintool/downloads/${PIN_TAR_NAME}.tar.gz" && \
+    echo "extracting pin tool to ${PIN_INSTALL_DIR}" && \
+    tar xzf /tmp/${PIN_TAR_NAME}.tar.gz -C ${PIN_INSTALL_DIR} && \
+    rm /tmp/${PIN_TAR_NAME}.tar.gz && \
+    echo "pin tool installed at ${PIN_ROOT}"
 
-RUN mkdir -p libdft
-COPY . libdft
+# export pin path
+ENV PATH="${PIN_ROOT}:${PATH}"
+
+RUN mkdir -p /libdft
 WORKDIR libdft
-RUN make
+
 COPY ./env.init /opt/
 
-VOLUME ["/data"]
-WORKDIR /data
 ENTRYPOINT [ "/opt/env.init" ]
+CMD ["/bin/bash"]
+# CMD ["sleep", "infinity"]
