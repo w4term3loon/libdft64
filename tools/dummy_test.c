@@ -1,20 +1,13 @@
-#include <unistd.h>
+#include <stdio.h>
+#include <stdlib.h>
 
-int main(void) {
-    char buffer[32]; // Small buffer to read a "word"
-    size_t bytes_read;
-
-    // 1. Read a "word" (whatever fits in one read call up to buffer size) from stdin
-    bytes_read = read(STDIN_FILENO, buffer, sizeof(buffer) - 1);
-
-    // 2. Output that "word" to stdout, if anything was read
-    if (bytes_read > 0) {
-        write(STDOUT_FILENO, buffer, bytes_read);
-    }
-
-    // 3. Output a simple greeting to stdout
-    char greeting[] = "Hi!\n"; // Greeting string
-    write(STDOUT_FILENO, greeting, sizeof(greeting) - 1); // sizeof()-1 for string literal length
-
-    return 0;
+int
+main() {
+  printf("[APP]: Calling malloc...\n");
+  void *p = malloc(10);
+  printf("[APP]: malloc returned %p\n", p);
+  if (p)
+    free(p);
+  printf("[APP]: Done.\n");
+  return 0;
 }

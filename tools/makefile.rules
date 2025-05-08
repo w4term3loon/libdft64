@@ -94,6 +94,9 @@ LOGGING_FLAGS = -DNO_PINTOOL_LOG
 TOOL_CXXFLAGS += $(LOGGING_FLAGS) -I$(LIBDFT_INC_PATH) -L$(LIBDFT_PATH)
 TOOL_LIBS += -L$(LIBDFT_PATH) -ldft
 
+$(OBJDIR)/dummy_test$(EXE_SUFFIX): dummy_test.c
+	gcc -o $(OBJDIR)/dummy_test$(EXE_SUFFIX) -O0 dummy_test.c
+
 INPUT_FILE=cur_input
-test_dummy: $(OBJDIR)/taintfuzz$(PINTOOL_SUFFIX) ${OBJDIR}/dummy_test$(EXE_SUFFIX)
+test: $(OBJDIR)/taintfuzz$(PINTOOL_SUFFIX) ${OBJDIR}/dummy_test$(EXE_SUFFIX)
 	$(PIN) -t $< -- $(OBJDIR)dummy_test$(EXE_SUFFIX)
