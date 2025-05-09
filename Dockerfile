@@ -11,7 +11,7 @@ FROM --platform=${BUILD_PLATFORM} ubuntu:20.04
 RUN dpkg --add-architecture i386 && \
     apt-get update && \
     apt-get -y upgrade && \
-    apt-get -y install --no-install-recommends \
+    DEBIAN_FRONTEND="noninteractive" apt-get -y install --no-install-recommends \
         ca-certificates \
         build-essential \
         gcc-multilib \
@@ -20,6 +20,7 @@ RUN dpkg --add-architecture i386 && \
         git \
         vim \
         file \
+        python3 \
         wget && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
