@@ -13,48 +13,31 @@
 #include "syscall_desc.h"
 #include "tagmap.h"
 
+#define DEBUG_TAINT 1
+#include "taint.hpp"
+
 // thread-local storage key
 // TODO: buffer it
 static TLS_KEY func_tls_key;
 
-/* the tag value used for tainting */
-/*static tag_traits<tag_t>::type dta_tag = 1;*/
-
-/* pintool specific
- * function call context definition
- * only up to FUNC_ARG_NUM args are saved
+/*
+ * exposed hook context
  * TODO: support stack stored arguments (>6)
  */
 #define FUNC_ARG_NUM 6
 typedef struct {
+  const char *name;
   ADDRINT address;
   ADDRINT args[FUNC_ARG_NUM];
   ADDRINT retval;
   void *etc;
-} func_ctx_t;
+} tf_hook_ctx_t;
 
 /*
- * vcpu_ctx_t
- * virtual CPU (VCPU) context definition;
- * x86/x86_32/i386 arch
- *
- * tf_thread_ctx pre-post mediator TLS
- * similar to syscall thread_ctx_t
- * TODO: nested instrumented functions will need
- * a tls-stack to store tls types
+ * library struct
+ * function desctiption function
  */
-typedef struct {
-  vcpu_ctx_t vcpu;
-  func_ctx_t func_ctx;
-} tf_thread_ctx;
-
-/*
- * internal function representation
- * @member name: library specific naming
- * @member nargs: args
- * @member cbs: hooks
- */
-typedef void (*func_cb_t)(THREADID, func_ctx_t *);
+typedef void (*func_cb_t)(THREADID, tf_hook_ctx_t *);
 typedef struct {
   const char *name;
   size_t nargs;
@@ -64,31 +47,79 @@ typedef struct {
   func_cb_t post;
 } func_desc_t;
 
+/*
+ * vcpu_ctx_t
+ * virtual CPU (VCPU) context definition;
+ * x86/x86_32/i386 arch
+ *
+ * tf_thread_ctx_t pre-post mediator TLS
+ * similar to syscall tf_thread_ctx_t
+ * TODO: nested instrumented functions will need
+ * a tls-stack to store tls types
+ */
+typedef struct {
+  vcpu_ctx_t vcpu;
+  tf_hook_ctx_t func_ctx;
+} tf_thread_ctx_t;
+
 // api
+void
+pre_system_hook(THREADID tid, tf_hook_ctx_t *fct) {
+  const char *string = (const char *)fct->args[0];
+  if (tf_is_memory_tainted((void *)string, 10)) { // Check length + null terminator (10 bytes)
+    printf("[SNK] T%d: system(string=%s) argument is tainted.\n", tid, string);
+  } else {
+    printf("[SNK] No taint found via tf_is_memory_tainted.\n");
+  }
+}
+
 static void
-pre_malloc_hook(THREADID tid, func_ctx_t *fct) {
-  printf("[HOOK] T%d: pre_malloc(size=%lu) at addr=0x%lx.\n", tid, (unsigned long)fct->args[0],
+pre_malloc_hook(THREADID tid, tf_hook_ctx_t *fct) {
+  size_t size = (size_t)fct->args[0];
+
+  printf("[PRE] T%d: pre_malloc(size=%lu) at addr=0x%lx.\n", tid, size,
          (unsigned long)fct->address);
+
+  tf_thread_ctx_t *call_ctx = static_cast<tf_thread_ctx_t *>(PIN_GetThreadData(func_tls_key, tid));
+  if (call_ctx) {
+    call_ctx->func_ctx.etc = (void *)size;
+  } else {
+    fprintf(stderr, "[ERR] T%d: Could not get TLS context in pre_malloc_hook for %s\n", tid,
+            fct->name);
+  }
+  fct->etc = (void *)size;
 }
 
 // api
 static void
-post_malloc_hook(THREADID tid, func_ctx_t *fct) {
-  printf("[HOOK] T%d: post_malloc(retval=0x%lx) at addr=0x%lx.\n", tid, (unsigned long)fct->retval,
-         (unsigned long)fct->address);
+post_malloc_hook(THREADID tid, tf_hook_ctx_t *fct) {
+  void *ptr = (void *)fct->retval;
+  size_t size = (size_t)fct->etc;
+
+  printf("[PST] T%d: post_malloc(ptr=0x%lx, size=%lu) at addr=0x%lx.\n", tid, (unsigned long)ptr,
+         size, (unsigned long)fct->address);
+
+  if (ptr != nullptr && size > 0) {
+    // track the allocation
+    tf_track_allocation(ptr, size);
+
+    // use heap source type with level 1, and allocation size as ID
+    tf_taint_memory(ptr, size, TS_HEAP, 1, size, "heap allocation");
+  }
 }
 
 /*
  * store all registered function hooks
  * so later they can be used if needed
+ * returns hook id
  */
 static std::map<std::string, func_desc_t> tf_hook_registry;
-bool
+int
 tf_register_func(std::string func_name, size_t nargs, func_cb_t pre, func_cb_t post) {
 
   // sanity check
   if (nargs > FUNC_ARG_NUM) {
-    std::cerr << "[ERROR] Cannot capture more than " << FUNC_ARG_NUM
+    std::cerr << "[ERR] Cannot capture more than " << FUNC_ARG_NUM
               << " arguments for function: " << func_name << std::endl;
     return false;
   }
@@ -101,8 +132,8 @@ tf_register_func(std::string func_name, size_t nargs, func_cb_t pre, func_cb_t p
 
   tf_hook_registry[func_name] = desc;
 
-  std::cout << "[INFO] Registered hook for function: " << func_name
-              << " with " << nargs << " args" << std::endl;
+  std::cout << "[INF] Registered hook for function: " << func_name << " with " << nargs << " args"
+            << std::endl;
 
   return true;
 }
@@ -110,7 +141,7 @@ tf_register_func(std::string func_name, size_t nargs, func_cb_t pre, func_cb_t p
 // internal
 VOID
 tf_pre_handler(THREADID tid, CONTEXT *ctx, ADDRINT func_addr, ADDRINT arg0, ADDRINT arg1,
-                   ADDRINT arg2, ADDRINT arg3, ADDRINT arg4, ADDRINT arg5, ADDRINT return_ip) {
+               ADDRINT arg2, ADDRINT arg3, ADDRINT arg4, ADDRINT arg5, ADDRINT return_ip) {
 
   // optimize (?)
   PIN_LockClient();
@@ -142,18 +173,24 @@ tf_pre_handler(THREADID tid, CONTEXT *ctx, ADDRINT func_addr, ADDRINT arg0, ADDR
     return;
   }
 
-  // Create context for this function call
-  tf_thread_ctx *call_ctx = new tf_thread_ctx();
+  // create context for this function call
+  tf_thread_ctx_t *call_ctx = new tf_thread_ctx_t();
   call_ctx->func_ctx.address = func_addr;
 
-  // Store the arguments based on how many we should capture
+  // store the arguments based on how many we should capture
   size_t nargs = it->second.nargs;
-  if (nargs >= 1) call_ctx->func_ctx.args[0] = arg0;
-  if (nargs >= 2) call_ctx->func_ctx.args[1] = arg1;
-  if (nargs >= 3) call_ctx->func_ctx.args[2] = arg2;
-  if (nargs >= 4) call_ctx->func_ctx.args[3] = arg3;
-  if (nargs >= 5) call_ctx->func_ctx.args[4] = arg4;
-  if (nargs >= 6) call_ctx->func_ctx.args[5] = arg5;
+  if (nargs >= 1)
+    call_ctx->func_ctx.args[0] = arg0;
+  if (nargs >= 2)
+    call_ctx->func_ctx.args[1] = arg1;
+  if (nargs >= 3)
+    call_ctx->func_ctx.args[2] = arg2;
+  if (nargs >= 4)
+    call_ctx->func_ctx.args[3] = arg3;
+  if (nargs >= 5)
+    call_ctx->func_ctx.args[4] = arg4;
+  if (nargs >= 6)
+    call_ctx->func_ctx.args[5] = arg5;
 
   // store the function context in TLS
   PIN_SetThreadData(func_tls_key, call_ctx, tid);
@@ -166,10 +203,9 @@ tf_pre_handler(THREADID tid, CONTEXT *ctx, ADDRINT func_addr, ADDRINT arg0, ADDR
 
 // internal
 VOID
-tf_post_handler(THREADID tid, CONTEXT* ctx, ADDRINT func_addr,
-                                            ADDRINT ret_val) {
+tf_post_handler(THREADID tid, CONTEXT *ctx, ADDRINT func_addr, ADDRINT ret_val) {
   // get thread info from TLS
-  tf_thread_ctx *call_ctx = static_cast<tf_thread_ctx *>(PIN_GetThreadData(func_tls_key, tid));
+  tf_thread_ctx_t *call_ctx = static_cast<tf_thread_ctx_t *>(PIN_GetThreadData(func_tls_key, tid));
 
   // check if the pre-hook stored data
   // TODO: it should work without pre-hooks
@@ -220,33 +256,28 @@ tf_instrument_func(RTN rtn) {
     }
   }
 
-  std::cout << "[INFO] Instrumenting function: " << func_name << std::endl;
+  std::cout << "[INF] Instrumenting function: " << func_name << std::endl;
 
   RTN_Open(rtn);
 
   // insert pre-hook handler
-  RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)tf_pre_handler,
-                IARG_THREAD_ID,
-                IARG_CONTEXT,                     // CPU context for register access
-                IARG_ADDRINT, RTN_Address(rtn),   // function address
-                // pass first 6 arguments (x86-64 calling convention)
-                IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
-                IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
-                IARG_FUNCARG_ENTRYPOINT_VALUE, 2,
-                IARG_FUNCARG_ENTRYPOINT_VALUE, 3,
-                IARG_FUNCARG_ENTRYPOINT_VALUE, 4,
-                IARG_FUNCARG_ENTRYPOINT_VALUE, 5,
-                IARG_RETURN_IP,                   // caller's return address
-                IARG_END);
+  RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)tf_pre_handler, IARG_THREAD_ID,
+                 IARG_CONTEXT,                   // CPU context for register access
+                 IARG_ADDRINT, RTN_Address(rtn), // function address
+                 // pass first 6 arguments (x86-64 calling convention)
+                 IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
+                 IARG_FUNCARG_ENTRYPOINT_VALUE, 2, IARG_FUNCARG_ENTRYPOINT_VALUE, 3,
+                 IARG_FUNCARG_ENTRYPOINT_VALUE, 4, IARG_FUNCARG_ENTRYPOINT_VALUE, 5,
+                 IARG_RETURN_IP, // caller's return address
+                 IARG_END);
 
   // insert post-hook handler if we have a post callback
   if (it->second.post != nullptr) {
-    RTN_InsertCall(rtn, IPOINT_AFTER, (AFUNPTR)tf_post_handler,
-                  IARG_THREAD_ID,
-                  IARG_CONTEXT,                   // CPU context for register access
-                  IARG_ADDRINT, RTN_Address(rtn), // function address
-                  IARG_FUNCRET_EXITPOINT_VALUE,   // return value
-                  IARG_END);
+    RTN_InsertCall(rtn, IPOINT_AFTER, (AFUNPTR)tf_post_handler, IARG_THREAD_ID,
+                   IARG_CONTEXT,                   // CPU context for register access
+                   IARG_ADDRINT, RTN_Address(rtn), // function address
+                   IARG_FUNCRET_EXITPOINT_VALUE,   // return value
+                   IARG_END);
   }
 
   RTN_Close(rtn);
@@ -254,7 +285,7 @@ tf_instrument_func(RTN rtn) {
 
 VOID
 tf_instrument_img(IMG img) {
-  std::cout << "[INFO] Processing image: " << IMG_Name(img) << std::endl;
+  std::cout << "[INF] Processing image: " << IMG_Name(img) << std::endl;
 
   // each section in the image
   for (SEC sec = IMG_SecHead(img); SEC_Valid(sec); sec = SEC_Next(sec)) {
@@ -278,30 +309,24 @@ main(int argc, char **argv) {
   // allocate the TLS key
   func_tls_key = PIN_CreateThreadDataKey(nullptr);
   if (func_tls_key == INVALID_TLS_KEY) {
-    std::cerr << "[ERROR] Cannot allocate TLS key." << std::endl;
+    std::cerr << "[ERR] Cannot allocate TLS key." << std::endl;
     goto err;
   }
 
   // init libdft
   if (unlikely(libdft_init() != 0)) {
-    std::cerr << "[ERROR] Failed to initialize libdft." << std::endl;
+    std::cerr << "[ERR] Failed to initialize libdft." << std::endl;
     goto err;
   }
 
-  // register malloc & free
-  tf_register_func("malloc", 1, pre_malloc_hook, post_malloc_hook);
-  tf_register_func("free", 1, [](THREADID tid, func_ctx_t *fct) {
-    printf("[HOOK] T%d: pre_free(size=%lu) at addr=0x%lx.\n", tid, (unsigned long)fct->args[0],
-       (unsigned long)fct->address);
-  }, nullptr);
+  // register malloc & send
+  tf_register_func("__libc_malloc", 1, pre_malloc_hook, post_malloc_hook);
+  tf_register_func("__libc_system", 1, pre_system_hook, nullptr);
 
-  // TODO: taint propagation
   // TODO: register all functions of a loaded library
 
   // Register image instrumentation
-  IMG_AddInstrumentFunction([](IMG img, VOID *v) {
-    tf_instrument_img(img);
-  }, 0);
+  IMG_AddInstrumentFunction([](IMG img, VOID *v) { tf_instrument_img(img); }, 0);
 
   // start pin
   PIN_StartProgram();
