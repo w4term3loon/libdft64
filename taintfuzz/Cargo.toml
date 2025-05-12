@@ -1,0 +1,12 @@
+[package]
+name = "taintfuzz"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4.5.18", features = ["default"] }
+log = "0.4"
+libc = "0.2"
+
+[lints]
+
