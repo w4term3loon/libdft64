@@ -63,7 +63,7 @@ typedef struct {
 } tf_thread_ctx_t;
 
 // api
-void
+static void
 pre_system_hook(THREADID tid, tf_hook_ctx_t *fct) {
   const char *string = (const char *)fct->args[0];
   if (tf_is_memory_tainted((void *)string, 10)) { // Check length + null terminator (10 bytes)
@@ -73,6 +73,7 @@ pre_system_hook(THREADID tid, tf_hook_ctx_t *fct) {
   }
 }
 
+// api
 static void
 pre_malloc_hook(THREADID tid, tf_hook_ctx_t *fct) {
   size_t size = (size_t)fct->args[0];
@@ -320,10 +321,19 @@ main(int argc, char **argv) {
   }
 
   // register malloc & send
-  tf_register_func("__libc_malloc", 1, pre_malloc_hook, post_malloc_hook);
-  tf_register_func("__libc_system", 1, pre_system_hook, nullptr);
+  tf_register_func("malloc", 1, pre_malloc_hook, post_malloc_hook);
+  tf_register_func("system", 1, pre_system_hook, nullptr);
+  tf_register_func("free", 1, [](THREADID tid, tf_hook_ctx_t *fct) {
+    uintptr_t addr = (uintptr_t)fct->args[0];
+    tf_untrack_allocation((void *)addr);
+    printf("[INF] T%d: untracking memory region 0x%lx\n", tid, addr);
+  }, nullptr);
 
-  // TODO: register all functions of a loaded library
+  // TODO: instrument GOT/PLT or detect call ins for external lib call detection
+  // TODO: hook libc
+  // TODO: try other libs
+  // TODO: parameter type info from signature in handlers or hooks
+  // TODO: heuristics
 
   // Register image instrumentation
   IMG_AddInstrumentFunction([](IMG img, VOID *v) { tf_instrument_img(img); }, 0);
