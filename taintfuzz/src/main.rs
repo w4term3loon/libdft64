@@ -14,7 +14,7 @@ use std::{
 use libafl_qemu::{
     command::NopCommandManager,
     elf::EasyElf,
-    modules::{EmulatorModule, EmulatorModuleTuple, StdEdgeCoverageModule, StdEdgeCoverageChildModule},
+    modules::{EmulatorModule, EmulatorModuleTuple, StdEdgeCoverageModule, StdEdgeCoverageChildModule, cmplog::CmpLogMap},
     Emulator, EmulatorModules, GuestAddr, Hook, NopEmulatorDriver, NopSnapshotManager, Qemu,
     SYS_read, SyscallHookResult,
     QemuForkExecutor,
@@ -30,9 +30,9 @@ use libafl::{
     feedbacks::CrashFeedback,
     feedbacks::TimeFeedback,
     state::StdState,
-    corpus::InMemoryOnDiskCorpus,
+    corpus::InMemoryCorpus,
     corpus::OnDiskCorpus,
-    events::SimpleRestartingEventManager,
+    events::SimpleEventManager,
     schedulers::QueueScheduler,
     StdFuzzer,
     Fuzzer,
@@ -59,7 +59,7 @@ use libafl_bolts::{
     ownedref::OwnedMutSlice,
 };
 
-use libafl_targets::{edges_map_mut_ptr, EDGES_MAP_ALLOCATED_SIZE, MAX_EDGES_FOUND, EDGES_MAP_DEFAULT_SIZE};
+use libafl_targets::{edges_map_mut_ptr, EDGES_MAP_ALLOCATED_SIZE, MAX_EDGES_FOUND, EDGES_MAP_DEFAULT_SIZE, CMPLOG_MAP_PTR, CmpLogObserver};
 
 use libc;
 use log::{error};
@@ -238,6 +238,7 @@ where
     I: HasTargetBytes + Unpin,
     S: Unpin,
 {
+    const HOOKS_DO_SIDE_EFFECTS: bool = false;
     fn post_qemu_init<ET>(&mut self, _qemu: Qemu, emulator_modules: &mut EmulatorModules<ET, I, S>)
     //hook input syscall
     where
@@ -517,28 +518,14 @@ fn fuzz(
     // monitor
     let mon = SimpleMonitor::new(|s| println!("{s}"));
 
-    let (state, mut mgr) = match SimpleRestartingEventManager::launch(mon, &mut shmem_provider)
-    {
-        // The restarting state will spawn the same process again as child, then restarted it each time it crashes.
-        Ok(res) => res,
-        Err(err) => match err {
-            Error::ShuttingDown => {
-                return Ok(());
-            }
-            _ => {
-                println!("{:?}", err);
-                panic!("Failed to setup the restarter: {err}");
-            }
-        },
-    };
+    let mut mgr = SimpleEventManager::new(mon);
 
     // create a State from scratch
-    let mut state = state.unwrap_or_else(|| {
-        StdState::new(
+    let mut state = StdState::new(
         // RNG
-        StdRand::with_seed(current_nanos()),
+        StdRand::new(),
         // Corpus that will be evolved, we keep it in memory for performance
-        InMemoryOnDiskCorpus::new(corpus).unwrap(),
+        InMemoryCorpus::new(),
         // Corpus in which we store solutions (crashes in this example),
         // on disk so the user can get them after stopping the fuzzer
         OnDiskCorpus::new(PathBuf::from(crashes)).unwrap(),
@@ -547,9 +534,8 @@ fn fuzz(
         &mut feedback,
         // Same for objective feedbacks
         &mut objective,
-        )
-        .unwrap()
-    });
+    )
+    .unwrap();
 
 
     // Setup a MOPT mutator
@@ -566,6 +552,17 @@ fn fuzz(
     // A fuzzer with feedbacks and a corpus scheduler
     let mut fuzzer = StdFuzzer::new(scheduler, feedback, objective);
 
+
+    let mut cmp_shmem = shmem_provider.uninit_on_shmem::<CmpLogMap>().unwrap();
+    let cmplog = cmp_shmem.as_slice_mut();
+
+    // Beginning of a page should be properly aligned.
+    #[expect(clippy::cast_ptr_alignment)]
+    let cmplog_map_ptr = cmplog
+        .as_mut_ptr()
+        .cast::<libafl_qemu::modules::cmplog::CmpLogMap>();
+
+
     //create executor
     let executor = QemuForkExecutor::new(
         emulator,
@@ -577,8 +574,13 @@ fn fuzz(
         shmem_provider,
         Duration::from_millis(5000),
     )?;
+    
+    unsafe {
+        CMPLOG_MAP_PTR = cmplog_map_ptr;
+    }
+    let cmplog_observer = unsafe { CmpLogObserver::with_map_ptr("cmplog", cmplog_map_ptr, true) };
 
-    let mut executor = ShadowExecutor::new(executor, tuple_list!());
+    let mut executor = ShadowExecutor::new(executor, tuple_list!(cmplog_observer));
 
     // load initial inputs
     if state.must_load_initial_inputs() {
