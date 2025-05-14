@@ -101,9 +101,6 @@ post_malloc_hook(THREADID tid, tf_hook_ctx_t *fct) {
          size, (unsigned long)fct->address);
 
   if (ptr != nullptr && size > 0) {
-    // track the allocation
-    tf_track_allocation(ptr, size);
-
     // use heap source type with level 1, and allocation size as ID
     tf_taint_memory(ptr, size, TS_HEAP, 1, size, "heap allocation");
   }
@@ -325,11 +322,12 @@ main(int argc, char **argv) {
   tf_register_func("system", 1, pre_system_hook, nullptr);
   tf_register_func("free", 1, [](THREADID tid, tf_hook_ctx_t *fct) {
     uintptr_t addr = (uintptr_t)fct->args[0];
-    tf_untrack_allocation((void *)addr);
-    printf("[INF] T%d: untracking memory region 0x%lx\n", tid, addr);
+    tf_clear_taint((void *)(addr + 1), 8);
+    printf("[INF] T%d: clearing memory region 0x%lx\n", tid, addr);
   }, nullptr);
 
   // TODO: instrument GOT/PLT or detect call ins for external lib call detection
+  // TODO: taint analysis
   // TODO: hook libc
   // TODO: try other libs
   // TODO: parameter type info from signature in handlers or hooks

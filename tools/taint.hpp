@@ -297,7 +297,7 @@ tf_taint_memory(void *addr, size_t size, taint_source_t source_type, uint8_t lev
 
   TAINT_DEBUG("tf_taint_memory: tainting region 0x%lx - 0x%lx (%zu bytes) "
               "source=%d, level=%u, instance_id=%d, desc=%s",
-              start_addr, end_addr, size, (int)source_type, level, source_id,
+              start_addr, end_addr, size, (int)source_type, level, instance_id,
               description ? description : "NULL");
 
   // create tag
@@ -414,7 +414,7 @@ tf_clear_taint(void *addr, size_t size) {
         // Fallback: Truncate the original region, losing metadata for the part after the hole.
         TAINT_DEBUG(
             "MAX_REGIONS reached, cannot split. Truncating region [0x%lx-0x%lx] to end at 0x%lx.",
-            r_start, r_end, clear_start_addr - 1);
+            r_start, r_end, c_start - 1);
         region->end_addr = c_start - 1;
         if (region->end_addr < region->start_addr) {
           // TODO
@@ -429,13 +429,13 @@ tf_clear_taint(void *addr, size_t size) {
 
     else if (r_start < c_start && r_end >= c_start) {
       TAINT_DEBUG("Region [0x%lx-0x%lx] truncated at end by [0x%lx-0x%lx]. New end: 0x%lx", r_start,
-                  r_end, clear_start_addr, clear_end_addr, clear_start_addr - 1);
+                  r_end, c_start, c_end, c_start - 1);
       g_taint_tracker.tainted_bytes_count -= (r_end - c_start + 1);
       region->end_addr = c_start - 1;
       if (region->end_addr < region->start_addr) {
         TAINT_DEBUG("Region became invalid after end truncation, should be removed.");
+        assert(0 && "TODO: remove invalid truncation.\n");
         // for now, we assume valid truncation, if end < start, it's effectively empty/invalid.
-        // TODO: remove it here
         // fallback to simple invalidation if not removing:
         // region_clear(current_region)
       }
@@ -451,7 +451,7 @@ tf_clear_taint(void *addr, size_t size) {
       if (region->start_addr > region->end_addr) {
         // this implies the region was fully consumed
         TAINT_DEBUG("Region became invalid after start truncation, should be removed.");
-        // TODO: remove
+        assert(0 && "TODO: remove invalid truncation.\n");
       }
       i++;
       continue;
@@ -492,12 +492,16 @@ tf_is_memory_tainted(void *addr, size_t size) {
     }
   }
 
+  // TODO: implement report on what parts the memory region was tainted
+  // Note: now it just returns if the region had paint at all
+
   TAINT_DEBUG("tf_is_memory_tainted: no taint found in region");
   return 0;
 }
 
 /*
  * Get detailed taint information for a memory address
+ * TODO: implement more granulated report
  */
 tag_t
 tf_get_taint_info(void *addr, taint_source_t *source_type, uint8_t *level) {
@@ -532,269 +536,6 @@ tf_get_taint_info(void *addr, taint_source_t *source_type, uint8_t *level) {
  */
 void
 tf_propagate_taint(void *dst, const void *src, size_t size, int preserve_dst) {
-  if (unlikely(!dst || !src || size == 0)) {
-    TAINT_DEBUG("tf_propagate_taint: invalid parameters (dst=%p, src=%p, size=%zu)", dst, src,
-                size);
-    return;
-  }
-
-  uintptr_t dst_addr = (uintptr_t)dst;
-  uintptr_t src_addr = (uintptr_t)src;
-
-  TAINT_DEBUG("tf_propagate_taint: copying taint from 0x%lx to 0x%lx (%zu bytes)%s", src_addr,
-              dst_addr, size, preserve_dst ? " with preservation" : "");
-
-  // Check if any source bytes are tainted - early return optimization
-  int has_taint = 0;
-  size_t check_limit =
-      (size > 100) ? 100 : size; // Check first 100 bytes to see if worth continuing
-
-  for (size_t i = 0; i < check_limit; i++) {
-    if (tagmap_getb(src_addr + i) != 0) {
-      has_taint = 1;
-      break;
-    }
-  }
-
-  if (!has_taint && !preserve_dst) {
-    TAINT_DEBUG("tf_propagate_taint: early return - no taint in first %zu bytes and not preserving",
-                check_limit);
-    return;
-  }
-
-  // handle potential overlap (like memmove)
-  if (dst_addr < src_addr + size && src_addr < dst_addr + size) {
-    TAINT_DEBUG("tf_propagate_taint: handling overlapping memory regions");
-
-#define MAX_STACK_TAGS 1024
-    tag_t stack_tags[MAX_STACK_TAGS];
-    tag_t *temp_tags = stack_tags;
-
-    // for larger sizes, process in chunks to avoid dynamic allocation
-    if (size <= MAX_STACK_TAGS) {
-      // copy source tags to temporary buffer
-      for (size_t i = 0; i < size; i++) {
-        temp_tags[i] = tagmap_getb(src_addr + i);
-      }
-
-      // apply tags to destination
-      for (size_t i = 0; i < size; i++) {
-        tag_t src_tag = temp_tags[i];
-
-        if (src_tag != 0) {
-          if (preserve_dst) {
-            tag_t dst_tag = tagmap_getb(dst_addr + i);
-            tag_t combined = combine_tags(dst_tag, src_tag);
-            tagmap_setb(dst_addr + i, combined);
-          } else {
-            tagmap_setb(dst_addr + i, src_tag);
-          }
-        } else if (!preserve_dst) {
-          tagmap_clrb(dst_addr + i);
-        }
-      }
-    } else {
-      // for larger regions, process in chunks
-      TAINT_DEBUG("tf_propagate_taint: processing large overlapping region in chunks");
-
-      for (size_t chunk = 0; chunk < size; chunk += MAX_STACK_TAGS) {
-        size_t chunk_size = (chunk + MAX_STACK_TAGS > size) ? (size - chunk) : MAX_STACK_TAGS;
-
-        TAINT_DEBUG("tf_propagate_taint: processing chunk at offset %zu, size %zu", chunk,
-                    chunk_size);
-
-        // copy chunk of source tags
-        for (size_t i = 0; i < chunk_size; i++) {
-          temp_tags[i] = tagmap_getb(src_addr + chunk + i);
-        }
-
-        // apply chunk of tags
-        for (size_t i = 0; i < chunk_size; i++) {
-          tag_t src_tag = temp_tags[i];
-
-          if (src_tag != 0) {
-            if (preserve_dst) {
-              tag_t dst_tag = tagmap_getb(dst_addr + chunk + i);
-              tag_t combined = combine_tags(dst_tag, src_tag);
-              tagmap_setb(dst_addr + chunk + i, combined);
-            } else {
-              tagmap_setb(dst_addr + chunk + i, src_tag);
-            }
-          } else if (!preserve_dst) {
-            tagmap_clrb(dst_addr + chunk + i);
-          }
-        }
-      }
-    }
-  } else {
-    // non-overlapping case - process directly
-    TAINT_DEBUG("tf_propagate_taint: handling non-overlapping memory regions");
-
-    size_t tainted_count = 0;
-
-    for (size_t i = 0; i < size; i++) {
-      tag_t src_tag = tagmap_getb(src_addr + i);
-
-      if (src_tag != 0) {
-        tainted_count++;
-        if (preserve_dst) {
-          tag_t dst_tag = tagmap_getb(dst_addr + i);
-          tag_t combined = combine_tags(dst_tag, src_tag);
-          tagmap_setb(dst_addr + i, combined);
-        } else {
-          tagmap_setb(dst_addr + i, src_tag);
-        }
-      } else if (!preserve_dst) {
-        tagmap_clrb(dst_addr + i);
-      }
-    }
-
-    TAINT_DEBUG("tf_propagate_taint: processed %zu bytes, %zu had taint", size, tainted_count);
-  }
-
-  // Check if any taint was actually propagated
-  int has_taint_after = 0;
-  for (size_t i = 0; i < size && !has_taint_after; i++) {
-    if (tagmap_getb(src_addr + i) != 0) {
-      has_taint_after = 1;
-    }
-  }
-
-  if (has_taint_after) {
-    printf("[TNT] Propagated taint from 0x%lx to 0x%lx (%zu bytes)%s\n", src_addr, dst_addr, size,
-           preserve_dst ? " with preservation" : "");
-  }
+  return;
 }
 
-/*
- * Track a memory allocation
- */
-void
-tf_track_allocation(void *ptr, size_t size) {
-  if (ptr == NULL) {
-    TAINT_DEBUG("tf_track_allocation: invalid pointer (NULL)");
-    return;
-  }
-
-  uintptr_t addr = (uintptr_t)ptr;
-  TAINT_DEBUG("tf_track_allocation: tracking allocation at 0x%lx, size %zu", addr, size);
-
-  int idx = find_allocation(addr);
-
-  if (idx >= 0) {
-    // update existing entry
-    TAINT_DEBUG("tf_track_allocation: updating existing entry at idx %d", idx);
-    g_taint_tracker.allocations[idx].size = size;
-    g_taint_tracker.allocations[idx].valid = 1;
-  } else {
-    // find a free slot
-    idx = find_free_alloc_slot(hash_addr(addr));
-    if (idx >= 0) {
-      TAINT_DEBUG("tf_track_allocation: creating new entry at idx %d", idx);
-      g_taint_tracker.allocations[idx].addr = addr;
-      g_taint_tracker.allocations[idx].size = size;
-      g_taint_tracker.allocations[idx].valid = 1;
-      g_taint_tracker.alloc_count++;
-      TAINT_DEBUG("tf_track_allocation: total allocations now: %zu", g_taint_tracker.alloc_count);
-    } else {
-      // TODO: implement reallocation
-      TAINT_DEBUG("tf_track_allocation: WARNING - no free slots for tracking allocation");
-    }
-  }
-}
-
-/*
- * Untrack a memory allocation (e.g., when freed)
- */
-void
-tf_untrack_allocation(void *ptr) {
-  if (ptr == NULL) {
-    TAINT_DEBUG("tf_untrack_allocation: invalid pointer (NULL)");
-    return;
-  }
-
-  uintptr_t addr = (uintptr_t)ptr;
-  TAINT_DEBUG("tf_untrack_allocation: untracking allocation at 0x%lx", addr);
-
-  int idx = find_allocation(addr);
-
-  if (idx >= 0) {
-    TAINT_DEBUG("tf_untrack_allocation: found allocation at idx %d, marking invalid", idx);
-    alloc_clear(&g_taint_tracker.allocations[idx]);
-    g_taint_tracker.alloc_count--;
-    TAINT_DEBUG("tf_untrack_allocation: total allocations now: %zu", g_taint_tracker.alloc_count);
-  } else {
-    TAINT_DEBUG("tf_untrack_allocation: allocation not found");
-  }
-}
-
-/*
- * Get allocation size for a pointer
- */
-size_t
-tf_get_allocation_size(void *ptr) {
-  if (ptr == NULL) {
-    TAINT_DEBUG("tf_get_allocation_size: invalid pointer (NULL)");
-    return 0;
-  }
-
-  uintptr_t addr = (uintptr_t)ptr;
-  TAINT_DEBUG("tf_get_allocation_size: looking up allocation at 0x%lx", addr);
-
-  int idx = find_allocation(addr);
-
-  if (idx >= 0 && g_taint_tracker.allocations[idx].valid) {
-    size_t size = g_taint_tracker.allocations[idx].size;
-    TAINT_DEBUG("tf_get_allocation_size: found allocation at idx %d, size %zu", idx, size);
-    return size;
-  }
-
-  TAINT_DEBUG("tf_get_allocation_size: allocation not found or invalid");
-  return 0;
-}
-
-/*
- * Print taint statistics
- */
-/*void*/
-/*tf_print_taint_stats() {*/
-/*  TAINT_DEBUG("tf_print_taint_stats: generating statistics");*/
-/**/
-/*  printf("===== TAINT TRACKING STATISTICS =====\n");*/
-/*  printf("Total tracked taint regions: %zu\n", g_taint_tracker.region_count);*/
-/*  printf("Total tainted bytes: %zu\n", g_taint_tracker.tainted_bytes_count);*/
-/*  printf("Active memory allocations: %zu\n", g_taint_tracker.alloc_count);*/
-/**/
-/*  size_t current_tainted = 0;*/
-/*  size_t checked_bytes = 0;*/
-/**/
-/*  for (size_t i = 0; i < MAX_REGIONS; i++) {*/
-/*    if (g_taint_tracker.allocations[i].valid) {*/
-/*      uintptr_t addr = g_taint_tracker.allocations[i].addr;*/
-/*      size_t size = g_taint_tracker.allocations[i].size;*/
-/**/
-/*      TAINT_DEBUG("tf_print_taint_stats: checking allocation at 0x%lx, size %zu", addr, size);*/
-/**/
-/*      // limit checking to avoid excessive overhead*/
-/*      size_t check_size = (size < 1024) ? size : 1024;*/
-/**/
-/*      for (size_t j = 0; j < check_size; j++) {*/
-/*        if (tagmap_getb(addr + j) != 0) {*/
-/*          current_tainted++;*/
-/*        }*/
-/*        checked_bytes++;*/
-/*      }*/
-/*    }*/
-/*  }*/
-/**/
-/*  if (checked_bytes > 0) {*/
-/*    float taint_percentage = (float)current_tainted / checked_bytes * 100.0f;*/
-/*    printf("Sampled tainted bytes: %zu out of %zu checked (%.2f%%)\n", current_tainted,*/
-/*           checked_bytes, taint_percentage);*/
-/**/
-/*    TAINT_DEBUG("tf_print_taint_stats: found %zu tainted bytes (%.2f%%)", current_tainted,*/
-/*                taint_percentage);*/
-/*  }*/
-/**/
-/*  printf("===================================\n");*/
-/*}*/
