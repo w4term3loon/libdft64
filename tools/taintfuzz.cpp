@@ -6,6 +6,7 @@
 #define DEBUG_TAINT
 #define TAINT_IMPLEMENTATION
 #include "taint.h"
+#include "memmng.h"
 
 // register-passed args
 #define FUNCTION_ARG_LIMIT 6
@@ -55,7 +56,8 @@ tf_register_func(std::string func_name, UINT32 nargs, func_cb_t pre, func_cb_t p
 static void
 pre_system_hook(tf_hook_ctx_t *ctx) {
   const char *command = (const char *)ctx->args[0];
-  if (command && tf_region_check((void *)command, 10)) {
+  size_t size = tf_mem_get_size((void *)ctx->args[0]);
+  if (command && tf_region_check((void *)command, size)) {
     fprintf(stdout, "[SNK] T%d: system(command=\"%s\") argument is tainted.\n", ctx->tid, command);
   } else {
     fprintf(stdout, "[SNK] T%d: system(command=\"%s\") no taint found.\n", ctx->tid,
@@ -68,31 +70,29 @@ pre_malloc_hook(tf_hook_ctx_t *ctx) {
   size_t size = (size_t)ctx->args[0];
   fprintf(stdout, "[PRE] T%d: pre_malloc(size=%lu) at addr=0x%lx.\n", ctx->tid, (unsigned long)size,
           (unsigned long)ctx->address);
-
-  // pass size in etc
-  ctx->etc = (uintptr_t)size;
 }
 
 static void
 post_malloc_hook(tf_hook_ctx_t *ctx) {
   uintptr_t ptr = (uintptr_t)(void *)ctx->retval;
-  size_t size = (size_t)ctx->etc; // retrieve size from pre-hook
+  size_t size = (size_t)ctx->args[0]; // retrieve size
 
   fprintf(stdout, "[PST] T%d: post_malloc(ptr=0x%lx, size=%lu) from call at addr=0x%lx.\n",
           ctx->tid, ptr, (unsigned long)size, (unsigned long)ctx->address);
 
   if (ptr && (size > 0)) {
-    tf_region_taint((void *)ptr, size, TS_HEAP, 1);
+    tf_mem_register((void *)ptr, size); //< register to memmng
+    tf_region_taint((void *)ptr, size, TS_HEAP, 1); //< taint region
   }
 }
 
 static void
 pre_free_hook(tf_hook_ctx_t *ctx) {
   uintptr_t addr = (uintptr_t)(void *)ctx->args[0];
-  // TODO: get size from a custom heap metadata tracker
-  size_t size_to_clear = 10;
+  size_t size_to_clear = tf_mem_get_size((void *)addr); //< fetch from memmng
   if (addr) {
     tf_region_clear((void *)addr, size_to_clear);
+    tf_mem_unregister((void *)addr);
     fprintf(stdout, "[INF] T%d: free(ptr=0x%lx), cleared %zu bytes of taint.\n", ctx->tid,
             (unsigned long)addr, size_to_clear);
   } else {
@@ -293,6 +293,7 @@ static VOID
 fini(INT32 code, VOID *v) {
   fprintf(stdout, "[INF] Application finished. Cleaning up function registry.\n");
   tf_func_registry.clear();
+  tf_mem_die();
   libdft_die();
 }
 
@@ -314,6 +315,9 @@ main(int argc, char **argv) {
     fprintf(stderr, "[ERR] Failed to initialize libdft.\n");
     goto err;
   }
+
+  // init mem
+  tf_mem_init();
 
   // register hooks
   tf_register_func("__libc_malloc", 1, pre_malloc_hook, post_malloc_hook);
