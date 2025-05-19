@@ -27,6 +27,9 @@ typedef struct {
   uintptr_t etc;
 } tf_hook_ctx_t;
 
+#include "logger.h"
+Logger logger;
+
 /*
  * Thread-local context for pre-post hook communication
  */
@@ -60,6 +63,7 @@ pre_system_hook(tf_hook_ctx_t *ctx) {
   size_t size = tf_mem_get_size((void *)ctx->args[0]);
   if (command && tf_region_check((void *)command, size)) {
     fprintf(stdout, "[SNK] T%d: system(command=\"%s\") argument is tainted.\n", ctx->tid, command);
+    logger.store(TT_EXEC, ctx);
   } else {
     fprintf(stdout, "[SNK] T%d: system(command=\"%s\") no taint found.\n", ctx->tid,
             command ? command : "NULL");
@@ -275,6 +279,7 @@ tf_instrument_rtn(RTN rtn, match_func cmp) {
 
 static VOID
 fini(INT32 code, VOID *v) {
+  logger.save_buffers();
   fprintf(stdout, "[INF] Application finished. Cleaning up function registry.\n");
   tf_func_registry.clear();
   tf_mem_die();
