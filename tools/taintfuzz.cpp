@@ -1,3 +1,4 @@
+#include <iostream> // remove
 #include <map>
 #include <string>
 
@@ -5,8 +6,8 @@
 
 #define DEBUG_TAINT
 #define TAINT_IMPLEMENTATION
-#include "taint.h"
 #include "memmng.h"
+#include "taint.h"
 
 // register-passed args
 #define FUNCTION_ARG_LIMIT 6
@@ -81,7 +82,7 @@ post_malloc_hook(tf_hook_ctx_t *ctx) {
           ctx->tid, ptr, (unsigned long)size, (unsigned long)ctx->address);
 
   if (ptr && (size > 0)) {
-    tf_mem_register((void *)ptr, size); //< register to memmng
+    tf_mem_register((void *)ptr, size);             //< register to memmng
     tf_region_taint((void *)ptr, size, TS_HEAP, 1); //< taint region
   }
 }
@@ -223,8 +224,7 @@ tf_instrument_rtn(RTN rtn, match_func cmp) {
 
   // default match
   if (cmp == nullptr) {
-    fprintf(stdout, "[INF] Default exact matching %s.\n", func_name.c_str());
-    cmp = [](std::string str1, std::string str2) { return str1 == str2; };
+    cmp = [](std::string str1, std::string str2) { return (str1 == str2); };
   }
 
   // Check if we should instrument this function
@@ -274,22 +274,6 @@ tf_instrument_rtn(RTN rtn, match_func cmp) {
 }
 
 static VOID
-tf_instrument_img(IMG img, VOID *cmp) {
-  fprintf(stdout, "[INF] Processing image: %s\n", IMG_Name(img).c_str());
-
-  if (!IMG_Valid(img)) {
-    fprintf(stderr, "[ERR] Attempted to process invalid image\n");
-    return;
-  }
-
-  for (SEC sec = IMG_SecHead(img); SEC_Valid(sec); sec = SEC_Next(sec)) {
-    for (RTN rtn = SEC_RtnHead(sec); RTN_Valid(rtn); rtn = RTN_Next(rtn)) {
-      tf_instrument_rtn(rtn, (match_func)cmp);
-    }
-  }
-}
-
-static VOID
 fini(INT32 code, VOID *v) {
   fprintf(stdout, "[INF] Application finished. Cleaning up function registry.\n");
   tf_func_registry.clear();
@@ -297,8 +281,48 @@ fini(INT32 code, VOID *v) {
   libdft_die();
 }
 
+/*typedef struct {*/
+/*  const char *lib;*/
+/*  match_func cmp;*/
+/*} probe_ctx_t;*/
+
+static VOID
+tf_instrument_img(IMG img, VOID *lib) {
+  /*probe_ctx_t *ctx = (probe_ctx_t *)pc;*/
+
+  // not the target library
+  if (IMG_Name(img).find((const char *)lib) == std::string::npos)
+    return;
+
+  fprintf(stdout, "[INF] Processing image: %s\n", IMG_Name(img).c_str());
+  for (SEC sec = IMG_SecHead(img); SEC_Valid(sec); sec = SEC_Next(sec)) {
+
+    // print all got rtns
+    if (SEC_Name(sec) == ".text") {
+      for (RTN rtn = SEC_RtnHead(sec); RTN_Valid(rtn); rtn = RTN_Next(rtn)) {
+        std::cout << RTN_Name(rtn) << std::endl;
+      }
+    }
+
+    // instrument routines
+    for (RTN rtn = SEC_RtnHead(sec); RTN_Valid(rtn); rtn = RTN_Next(rtn)) {
+      tf_instrument_rtn(rtn, nullptr);
+    }
+  }
+
+  if (!IMG_Valid(img)) {
+    fprintf(stderr, "[ERR] Attempted to process invalid image\n");
+    return;
+  }
+}
+
 int
 main(int argc, char **argv) {
+
+  /*probe_ctx_t pc = {"libc", (match_func)[](std::string str1, std::string str2) {*/
+  /*                    return (str1.find(str2) != std::string::npos);*/
+  /*                  }};*/
+
   PIN_InitSymbols();
   if (PIN_Init(argc, argv)) {
     fprintf(stderr, "[ERR] PIN_Init failed: %s\n", PIN_ToolFullPath());
@@ -324,10 +348,7 @@ main(int argc, char **argv) {
   tf_register_func("__libc_system", 1, pre_system_hook, nullptr);
   tf_register_func("free", 1, pre_free_hook, nullptr);
 
-  IMG_AddInstrumentFunction(
-      tf_instrument_img, (VOID *)(match_func)[](std::string str1, std::string str2) {
-        return (str1.find(str2) != std::string::npos);
-      });
+  IMG_AddInstrumentFunction(tf_instrument_img, (VOID *)"libc");
 
   // register Fini function to be called when the application exits
   PIN_AddFiniFunction(fini, 0);
@@ -341,3 +362,8 @@ err:
   fprintf(stderr, "[ERR] Tool initialization failed. Exiting.\n");
   return EXIT_FAILURE;
 }
+
+// TODO: instrument GOT/PLT or detect call ins for external lib call detection
+// TODO: hook libc
+// TODO: try other libs
+// TODO: parameter type info from signature in handlers or hooks
