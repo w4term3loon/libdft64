@@ -349,7 +349,7 @@ main(int argc, char **argv) {
   tf_mem_init();
 
   // register hooks
-  tf_register_func("__libc_malloc", 1, pre_malloc_hook, post_malloc_hook);
+  tf_register_func("malloc", 1, pre_malloc_hook, post_malloc_hook);
   tf_register_func("__libc_system", 1, pre_system_hook, nullptr);
   tf_register_func("free", 1, pre_free_hook, nullptr);
 

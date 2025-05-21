@@ -8,13 +8,20 @@ use std::{
     os::unix::{io::RawFd, process::CommandExt}, 
     time::Duration,
     process, 
-    ptr::NonNull
+    ptr::NonNull,
+    num::NonZero,
+    fs::File,
+    borrow::Cow,
+    io::Read, 
+    io::Write,
+    io,
+    mem::MaybeUninit,
 };
 
 use libafl_qemu::{
     command::NopCommandManager,
     elf::EasyElf,
-    modules::{EmulatorModule, EmulatorModuleTuple, StdEdgeCoverageModule, StdEdgeCoverageChildModule, cmplog::CmpLogMap},
+    modules::{EmulatorModule, EmulatorModuleTuple, StdEdgeCoverageModule, StdEdgeCoverageChildModule, cmplog::CmpLogMap, cmplog::CmpLogChildModule,},
     Emulator, EmulatorModules, GuestAddr, Hook, NopEmulatorDriver, NopSnapshotManager, Qemu,
     SYS_read, SyscallHookResult,
     QemuForkExecutor,
@@ -24,32 +31,38 @@ use libafl_qemu::{
 };
 
 use libafl::{
-    inputs::{BytesInput, HasTargetBytes},
+    inputs::{BytesInput, HasTargetBytes, ResizableMutator, HasMutatorBytes},
     observers::{ConstMapObserver, HitcountsMapObserver, VariableMapObserver, CanTrack, TimeObserver},
     feedbacks::MaxMapFeedback,
     feedbacks::CrashFeedback,
     feedbacks::TimeFeedback,
     state::StdState,
     corpus::InMemoryCorpus,
+    corpus::InMemoryOnDiskCorpus,
     corpus::OnDiskCorpus,
     events::SimpleEventManager,
     schedulers::QueueScheduler,
     StdFuzzer,
     Fuzzer,
+    HasMetadata,
+    state::HasRand,
+    state::HasMaxSize,
     executors::{ExitKind, ShadowExecutor, InProcessExecutor},
-    mutators::{HavocScheduledMutator, I2SRandReplace, havoc_mutations, StdMOptMutator, tokens_mutations},
-    stages::{StdMutationalStage, StdPowerMutationalStage, ShadowTracingStage, CalibrationStage},
+    mutators::{HavocScheduledMutator, MutationResult, I2SRandReplace, havoc_mutations, StdMOptMutator, tokens_mutations, Mutator, },
+    stages::{StdMutationalStage, ShadowTracingStage, CalibrationStage},
     monitors::SimpleMonitor,
     Error,
     state::HasCorpus,
-    corpus::Corpus,
+    corpus::{Corpus, CorpusId},
     state::{HasExecutions, HasSolutions, HasCurrentTestcase},
     feedback_or, 
+    generators::RandPrintablesGenerator,
 };
 
 use libafl_bolts::{
     current_nanos, 
     nonzero, 
+    Named,
     shmem::{unix_shmem, ShMem, ShMemId, ShMemProvider, StdShMemProvider},
     AsSliceMut,
     rands::StdRand, 
@@ -63,6 +76,7 @@ use libafl_targets::{edges_map_mut_ptr, EDGES_MAP_ALLOCATED_SIZE, MAX_EDGES_FOUN
 
 use libc;
 use log::{error};
+use bcmp::{AlgoSpec, MatchIterator};
 
 use clap::{Arg, Command as argCommand};
 
@@ -73,6 +87,28 @@ static TRACK_FILE: &str = "track";
 static PIN_ROOT_VAR: &str = "PIN_ROOT";
 const MAX_INPUT_SIZE: usize = 1048576;
 
+
+
+fn read_struct<T, R: Read>(mut read: R) -> io::Result<T> {
+    let mut obj = MaybeUninit::<T>::uninit();
+    let num_bytes = std::mem::size_of::<T>();
+    let buffer = unsafe { std::slice::from_raw_parts_mut(obj.as_mut_ptr() as *mut u8, num_bytes) };
+    read.read_exact(buffer)?;
+    Ok(unsafe { obj.assume_init() })
+}
+
+fn read_vector<T, R: Read>(mut read: R, size: usize) -> io::Result<Vec<T>> {
+    let mut vec = Vec::<T>::with_capacity(size);
+    if size > 0 {
+        let num_bytes = std::mem::size_of::<T>() * size;
+        unsafe { vec.set_len(size) };
+        let buffer = unsafe {
+            std::slice::from_raw_parts_mut((&mut vec[..]).as_mut_ptr() as *mut u8, num_bytes)
+        };
+        read.read_exact(buffer)?;
+    }
+    Ok(vec)
+}
 
 pub trait SetLimit {
     fn mem_limit(&mut self, size: u64) -> &mut Self;
@@ -270,6 +306,100 @@ where
     }
 }
 
+// custom mutation
+#[derive(Debug, Default)]
+pub struct Taintfuzz_mutate {
+    file: PathBuf,
+    track_bin: String,
+    track_args: Vec::<String>,
+}
+
+impl<I, S> Mutator<I, S> for Taintfuzz_mutate
+where
+    S: HasMetadata + HasRand + HasMaxSize,
+    I: ResizableMutator<u8> + HasMutatorBytes + Clone,
+{
+    #[expect(clippy::too_many_lines)]
+    fn mutate(&mut self, state: &mut S, input: &mut I) -> Result<MutationResult, Error> {
+        let size = input.mutator_bytes().len();
+        let Some(size) = NonZero::new(size) else {
+            return Ok(MutationResult::Skipped);
+        };
+
+        //run pin
+
+        let mut child = Command::new(&(self.track_bin.to_string()))
+        .args(&(self.track_args.clone()))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn().expect("Failed to spawn child process");
+
+        let mut stdin = child.stdin.take().expect("Failed to open stdin");
+        stdin.write_all(input.mutator_bytes_mut()).expect("Failed to write to stdin");
+
+        let mut f = match File::open(self.file.clone()) {
+            Ok(file) => file,
+            Err(err) => {
+                panic!("could not open {:?}: {:?}", self.file, err);
+            },
+        };
+
+        let mut buffer = Vec::new();
+        f.read_to_end(&mut buffer).unwrap();
+
+        let mut buffer = &buffer[..];
+
+        let num_exec = read_struct::<u32, _>(&mut buffer)? as usize;
+        let mut arg = vec![];
+        for _ in 0..num_exec {
+            let size = read_struct::<u32, _>(&mut buffer)?;
+            arg = read_vector::<u8, _>(&mut buffer, size as usize)?;
+        }
+
+        if num_exec > 0 {
+            let arg_string = String::from_utf8_lossy(arg.as_slice());
+            let mut match_string = input.clone();
+            let bytes = input.mutator_bytes_mut();
+            let match_bytes = match_string.mutator_bytes_mut();
+            let match_iter = MatchIterator::new(arg_string.as_bytes(), match_bytes, AlgoSpec::HashMatch(2));
+            for m in match_iter {
+                println!("Match: {:?}", String::from_utf8_lossy(&bytes[m.first_pos..m.first_end()]));
+                let len = m.first_end() - m.first_pos;
+                let mut new_bytes = ";ls;";
+                new_bytes = &new_bytes[0..len];
+                bytes[m.first_pos..m.first_end()].copy_from_slice(new_bytes.as_bytes());
+            }
+        }
+
+        let result = MutationResult::Mutated;
+        Ok(result)
+    }
+    #[inline]
+    fn post_exec(&mut self, _state: &mut S, _new_corpus_id: Option<CorpusId>) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+impl Named for Taintfuzz_mutate {
+    fn name(&self) -> &Cow<'static, str> {
+        static NAME: Cow<'static, str> = Cow::Borrowed("Taintfuzz_mutate");
+        &NAME
+    }
+}
+
+impl Taintfuzz_mutate {
+    /// Creates a new `Taintfuzz_mutate` struct.
+    #[must_use]
+    pub fn new(file: PathBuf, track_bin: String, track_args: Vec::<String>) -> Self {
+        Self{
+            file,
+            track_bin,
+            track_args,
+        }
+    }
+}
+
 
 pub fn main(){
     // get args
@@ -309,7 +439,7 @@ pub fn main(){
         Ok(res) => res,
         Err(err) => {
             println!(
-                "Syntax: {} -i <input> -o <output> -- <program>\n{:?}",
+                "Syntax: {} -i <input> -o <output> -t <track> -- <program>\n{:?}",
                 env::current_exe()
                     .unwrap_or_else(|_| "fuzzer".into())
                     .to_string_lossy(),
@@ -386,7 +516,7 @@ fn fuzz(
     let mut crashes = out_dir.clone();
     crashes.push("crashes");
     let mut corpus = out_dir.clone();
-    corpus.push("corpus");
+    corpus.push("queue");
 
     // input fd
     out_dir.push(TMP_DIR);
@@ -394,12 +524,6 @@ fn fuzz(
     fs::create_dir(&(tmp_dir.to_str().unwrap().to_owned())).unwrap();
     tmp_dir.push(INPUT_FILE);
     let cur_input = tmp_dir.to_str().unwrap().to_owned();
-    let fd = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .open(&cur_input)
-        .expect("Fail to open default input file!");
 
 
     // is stdin or other input
@@ -445,9 +569,13 @@ fn fuzz(
     let mut args = Vec::<String>::new();
     args.push(main_bin); // just pad
     args.extend(pargs.clone());
-    let modules = tuple_list!(QemuInputHelper::new(),StdEdgeCoverageChildModule::builder()
+    let modules = tuple_list!(
+        QemuInputHelper::new(),
+        StdEdgeCoverageChildModule::builder()
             .const_map_observer(edges_observer.as_mut())
-            .build()?,);
+            .build()?,
+        CmpLogChildModule::default(),
+    );
     let emulator: Emulator<
         _, _, _, _, _, _, _
     > = Emulator::empty()
@@ -459,23 +587,23 @@ fn fuzz(
     let qemu = emulator.qemu(); // create emulator
 
     // wrap track harness
-    let mut track_harness = |_input: &BytesInput| {
-        match Command::new(&(track_bin.to_string()))
-        .args(&(track_args.clone()))
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .pipe_stdin(fd.as_raw_fd(), is_stdin)
-        .spawn()
-        {
-            Ok(_) => (),
-            Err(e) => {
-                error!("FATAL: Failed to spawn child with pin. Reason: {}", e);
-                panic!();
-            },
-        };
-        ExitKind::Ok
-    };
+    // let mut track_harness = |_input: &BytesInput| {
+    //     match Command::new(&(track_bin.to_string()))
+    //     .args(&(track_args.clone()))
+    //     .stdin(Stdio::null())
+    //     .stdout(Stdio::null())
+    //     .stderr(Stdio::null())
+    //     .pipe_stdin(fd.as_raw_fd(), is_stdin)
+    //     .spawn()
+    //     {
+    //         Ok(_) => (),
+    //         Err(e) => {
+    //             error!("FATAL: Failed to spawn child with pin. Reason: {}", e);
+    //             panic!();
+    //         },
+    //     };
+    //     ExitKind::Ok
+    // };
 
     let mut harness = |_emulator: &mut Emulator<
         _, _, _, _, _, _, _
@@ -492,7 +620,6 @@ fn fuzz(
                 _ => panic!("Unexpected QEMU exit: {qemu_ret:?}"),
             }
         };
-        track_harness(input);
         ExitKind::Ok
     };
 
@@ -525,7 +652,7 @@ fn fuzz(
         // RNG
         StdRand::new(),
         // Corpus that will be evolved, we keep it in memory for performance
-        InMemoryCorpus::new(),
+        InMemoryOnDiskCorpus::new(corpus).unwrap(),
         // Corpus in which we store solutions (crashes in this example),
         // on disk so the user can get them after stopping the fuzzer
         OnDiskCorpus::new(PathBuf::from(crashes)).unwrap(),
@@ -567,7 +694,7 @@ fn fuzz(
     let executor = QemuForkExecutor::new(
         emulator,
         &mut harness,
-        tuple_list!(edges_observer),
+        tuple_list!(edges_observer, time_observer),
         &mut fuzzer,
         &mut state,
         &mut mgr,
@@ -583,32 +710,36 @@ fn fuzz(
     let mut executor = ShadowExecutor::new(executor, tuple_list!(cmplog_observer));
 
     // load initial inputs
-    if state.must_load_initial_inputs() {
-        state
-            .load_initial_inputs(&mut fuzzer, &mut executor, &mut mgr, &[in_dir.clone()])
-            .unwrap_or_else(|_| {
-                println!("Failed to load initial corpus at {:?}", &in_dir);
-                process::exit(0);
-            });
-        println!("We imported {} input(s) from disk.", state.corpus().count());
-    }
+    // if state.must_load_initial_inputs() {
+    //     state
+    //         .load_initial_inputs(&mut fuzzer, &mut executor, &mut mgr, &[in_dir.clone()])
+    //         .unwrap_or_else(|_| {
+    //             println!("Failed to load initial corpus at {:?}", &in_dir);
+    //             process::exit(0);
+    //         });
+    //     println!("We imported {} input(s) from disk.", state.corpus().count());
+    // }
 
+    // Generator of printable bytearrays of max size 4
+    let mut generator = RandPrintablesGenerator::new(nonzero!(4));
 
+    state
+        .generate_initial_inputs(&mut fuzzer, &mut executor, &mut generator, &mut mgr, 8)
+        .expect("Failed to generate the initial corpus");
+
+    let mut cpath = env::current_dir()?;
+    cpath.push("track.out");
 
     // Setup a randomic Input2State stage
     let i2s = StdMutationalStage::new(HavocScheduledMutator::new(tuple_list!(
-        I2SRandReplace::new()
+        I2SRandReplace::new(), Taintfuzz_mutate::new(cpath, track_bin, track_args)
     )));
-
-    // power mutation stage
-    let power: StdPowerMutationalStage<_, _, BytesInput, _, _, _> =
-        StdPowerMutationalStage::new(mutator);
 
     // tracing stage
     let tracing = ShadowTracingStage::new();
 
     // create stages
-    let mut stages = tuple_list!(calibration, tracing, i2s, power);
+    let mut stages = tuple_list!(calibration, tracing, i2s);
 
     fuzzer
         .fuzz_loop(&mut stages, &mut executor, &mut state, &mut mgr)
