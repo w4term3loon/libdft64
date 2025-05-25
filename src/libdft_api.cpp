@@ -46,7 +46,7 @@ thread_ctx_t *threads_ctx = NULL;
 extern syscall_desc_t syscall_desc[SYSCALL_MAX];
 
 /* ins descriptors */
-ins_desc_t ins_desc[XED_ICLASS_LAST];
+extern ins_desc_t ins_desc[XED_ICLASS_LAST];
 
 /*
  * thread start callback (analysis function)

@@ -8,12 +8,15 @@
 #define TAINT_IMPLEMENTATION
 #include "memmng.h"
 #include "taint.h"
+#include "libdft_api.h"
 
 // register-passed args
 #define FUNCTION_ARG_LIMIT 6
 
 // thread-local storage key
 static TLS_KEY func_tls_key;
+
+ins_desc_t ins_desc[XED_ICLASS_LAST];
 
 /*
  * Exposed hook context
@@ -91,6 +94,46 @@ post_malloc_hook(tf_hook_ctx_t *ctx) {
   }
 }
 
+static void trace_uaf(INS ins);
+
+static void trace_uaf_start() {
+
+  xed_iclass_enum_t ins_indx;
+
+  ins_indx = XED_ICLASS_MOV;
+
+  if (unlikely(ins_desc[ins_indx].pre == NULL))
+    ins_desc[ins_indx].pre = trace_uaf;
+
+}
+
+static void trace_uaf_stop() {
+
+  xed_iclass_enum_t ins_indx;
+
+  ins_indx = XED_ICLASS_MOV;
+
+  if (unlikely(ins_desc[ins_indx].pre == trace_uaf))
+    ins_desc[ins_indx].pre = NULL;
+
+}
+
+static void uaf(ADDRINT dst){
+  // printf("memory: %lx\n", dst);
+  if (tag_uaf_getb(dst)){
+    logger.store_ins(TT_UAF, dst);
+  } 
+}
+
+static void trace_uaf(INS ins){
+  if (INS_OperandIsMemory(ins, 0)) {
+   INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)uaf,        \
+                 IARG_FAST_ANALYSIS_CALL, IARG_MEMORYWRITE_EA, \
+                 IARG_END);
+   trace_uaf_stop();// TODO add stop point for uaf
+  }
+}
+
 static void
 pre_free_hook(tf_hook_ctx_t *ctx) {
   uintptr_t addr = (uintptr_t)(void *)ctx->args[0];
@@ -100,9 +143,16 @@ pre_free_hook(tf_hook_ctx_t *ctx) {
     tf_mem_unregister((void *)addr);
     fprintf(stdout, "[INF] T%d: free(ptr=0x%lx), cleared %zu bytes of taint.\n", ctx->tid,
             (unsigned long)addr, size_to_clear);
+    for (uintptr_t i=addr; i < addr + (unsigned int)size_to_clear; i++){
+      tag_uaf_setb(addr, 0x26); // for uaf
+    }
   } else {
     fprintf(stdout, "[INF] T%d: free(ptr=NULL) called.\n", ctx->tid);
   }
+}
+
+static void post_free_hook(tf_hook_ctx_t *ctx){
+  trace_uaf_start();
 }
 
 // --- Pin Instrumentation Callbacks ---
@@ -351,7 +401,7 @@ main(int argc, char **argv) {
   // register hooks
   tf_register_func("malloc", 1, pre_malloc_hook, post_malloc_hook);
   tf_register_func("__libc_system", 1, pre_system_hook, nullptr);
-  tf_register_func("free", 1, pre_free_hook, nullptr);
+  tf_register_func("free", 1, pre_free_hook, post_free_hook);
 
   IMG_AddInstrumentFunction(tf_instrument_img, (VOID *)"libc");
 
