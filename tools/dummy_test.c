@@ -14,7 +14,6 @@ main() {
   char *p1 = (char *)malloc(10);
   p1[0] = 'a';
 
-
   if (p)
     free(p);
 
