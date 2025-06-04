@@ -1,17 +1,29 @@
-#include <iostream> // remove
-#include <map>
 #include <string>
 
 #include "pin.H"
 
 #define DEBUG_TAINT
 #define TAINT_IMPLEMENTATION
-#include "libdft_api.h"
 #include "memmng.h"
 #include "taint.h"
 
 // register-passed args
 #define FUNCTION_ARG_LIMIT 6
+
+enum io_flag_t { IO_SRC = 1 << 0, IO_SINK = 1 << 1 };
+struct sig_entry_t {
+  const char *name;
+  uint32_t io_flags; // IO_SRC | IO_SINK | …
+  uint32_t nargs;
+  int8_t taint_map[FUNCTION_ARG_LIMIT]; // -1 = ignore, otherwise argidx
+};
+
+/* header that *uses* the table */
+#define TF_SIG_ENTRY(name, flags, argc, ...) {name, flags, argc, {__VA_ARGS__}},
+const sig_entry_t tf_sig_table[] = {
+#include "tf_std_sig.h"
+};
+#undef TF_SIG_ENTRY
 
 // thread-local storage key
 static TLS_KEY func_tls_key;
@@ -276,51 +288,40 @@ tf_post_handler(THREADID tid, CONTEXT *ctx, ADDRINT func_addr, ADDRINT ret_val) 
 using match_func = bool (*)(std::string rtn, std::string func);
 
 static VOID
-tf_instrument_rtn(RTN rtn, match_func cmp) {
+tf_instrument_rtn(
+    RTN rtn, match_func cmp = [](std::string str1, std::string str2) {
+      return str1.find(str2) != std::string::npos;
+    }) {
   std::string func_name = RTN_Name(rtn);
 
-  // default match
-  if (cmp == nullptr) {
-    cmp = [](std::string str1, std::string str2) { return (str1 == str2); };
-  }
-
-  // Check if we should instrument this function
-  bool should_ins = false;
-  for (const auto &entry : tf_func_registry) {
-    if (cmp(func_name, entry.first)) {
-      should_ins = true;
-      break;
-    }
-  }
-
-  // fallback on partial matching
-  if (!should_ins) {
-    return;
-  }
-
-  fprintf(stdout, "[INF] Instrumenting function: %s\n", func_name.c_str());
-
+  // invalid
   if (!RTN_Valid(rtn)) {
     fprintf(stderr, "[ERR] Attempted to instrument invalid routine: %s\n", func_name.c_str());
     return;
+  } else {
+    fprintf(stdout, "[INF] Instrumenting function: %s\n", func_name.c_str());
   }
 
   RTN_Open(rtn);
 
-  // Find the hook descriptor for this function
+  // find the hook descriptor for this function
   hook_t hook = {0, nullptr, nullptr};
   for (const auto &entry : tf_func_registry) {
-    if (func_name.find(entry.first) != std::string::npos) {
+    // important: partial matching
+    // TODO: maybe sometimes aliases are completely different
+    if (cmp(func_name, entry.first)) {
       hook = entry.second;
       break;
     }
   }
 
-  RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)tf_pre_handler, IARG_THREAD_ID, IARG_CONTEXT,
-                 IARG_ADDRINT, RTN_Address(rtn), IARG_RETURN_IP, IARG_UINT32, hook.nargs,
-                 IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
-                 IARG_FUNCARG_ENTRYPOINT_VALUE, 2, IARG_FUNCARG_ENTRYPOINT_VALUE, 3,
-                 IARG_FUNCARG_ENTRYPOINT_VALUE, 4, IARG_FUNCARG_ENTRYPOINT_VALUE, 5, IARG_END);
+  if (hook.pre != nullptr) {
+    RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)tf_pre_handler, IARG_THREAD_ID, IARG_CONTEXT,
+                   IARG_ADDRINT, RTN_Address(rtn), IARG_RETURN_IP, IARG_UINT32, hook.nargs,
+                   IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
+                   IARG_FUNCARG_ENTRYPOINT_VALUE, 2, IARG_FUNCARG_ENTRYPOINT_VALUE, 3,
+                   IARG_FUNCARG_ENTRYPOINT_VALUE, 4, IARG_FUNCARG_ENTRYPOINT_VALUE, 5, IARG_END);
+  }
 
   if (hook.post != nullptr) {
     RTN_InsertCall(rtn, IPOINT_AFTER, (AFUNPTR)tf_post_handler, IARG_THREAD_ID, IARG_CONTEXT,
@@ -328,15 +329,6 @@ tf_instrument_rtn(RTN rtn, match_func cmp) {
   }
 
   RTN_Close(rtn);
-}
-
-static VOID
-fini(INT32 code, VOID *v) {
-  logger.save_buffers();
-  fprintf(stdout, "[INF] Application finished. Cleaning up function registry.\n");
-  tf_func_registry.clear();
-  tf_mem_die();
-  libdft_die();
 }
 
 /*typedef struct {*/
@@ -349,29 +341,47 @@ tf_instrument_img(IMG img, VOID *lib) {
   /*probe_ctx_t *ctx = (probe_ctx_t *)pc;*/
 
   // not the target library
-  if (IMG_Name(img).find((const char *)lib) == std::string::npos)
+  if (IMG_Name(img).find((const char *)lib) == std::string::npos) {
     return;
-
-  fprintf(stdout, "[INF] Processing image: %s\n", IMG_Name(img).c_str());
-  for (SEC sec = IMG_SecHead(img); SEC_Valid(sec); sec = SEC_Next(sec)) {
-
-    // print all got rtns
-    if (SEC_Name(sec) == ".text") {
-      for (RTN rtn = SEC_RtnHead(sec); RTN_Valid(rtn); rtn = RTN_Next(rtn)) {
-        std::cout << RTN_Name(rtn) << std::endl;
-      }
-    }
-
-    // instrument routines
-    for (RTN rtn = SEC_RtnHead(sec); RTN_Valid(rtn); rtn = RTN_Next(rtn)) {
-      tf_instrument_rtn(rtn, nullptr);
-    }
   }
 
+  // invalid
   if (!IMG_Valid(img)) {
     fprintf(stderr, "[ERR] Attempted to process invalid image\n");
     return;
   }
+
+  fprintf(stdout, "[INF] Processing image: %s\n", IMG_Name(img).c_str());
+  for (const auto &kv : tf_func_registry) {
+    std::string func_name = kv.first;
+
+    RTN rtn = RTN_FindByName(img, func_name.c_str());
+    ADDRINT addr = RTN_Address(rtn);
+    for (SYM sym = IMG_RegsymHead(img); SYM_Valid(sym); sym = SYM_Next(sym)) {
+      if (SYM_Address(sym) == addr) {
+        // override the hooked name found in the lib
+        // with the first funcion on the same address
+        rtn = RTN_FindByName(img, SYM_Name(sym).c_str());
+      }
+    }
+
+    // invalid symbol (e.g. inline)
+    if (!RTN_Valid(rtn)) {
+      continue;
+    }
+
+    // instrument
+    tf_instrument_rtn(rtn);
+  }
+}
+
+static VOID
+fini(INT32 code, VOID *v) {
+  logger.save_buffers();
+  fprintf(stdout, "[INF] Application finished. Cleaning up function registry.\n");
+  tf_func_registry.clear();
+  tf_mem_die();
+  libdft_die();
 }
 
 int
@@ -402,8 +412,8 @@ main(int argc, char **argv) {
   tf_mem_init();
 
   // register hooks
-  tf_register_func("__libc_malloc", 1, pre_malloc_hook, post_malloc_hook);
-  tf_register_func("__libc_system", 1, pre_system_hook, nullptr);
+  tf_register_func("malloc", 1, pre_malloc_hook, post_malloc_hook);
+  tf_register_func("system", 1, pre_system_hook, nullptr);
   tf_register_func("free", 1, pre_free_hook, post_free_hook);
 
   IMG_AddInstrumentFunction(tf_instrument_img, (VOID *)"libc");

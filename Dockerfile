@@ -21,6 +21,9 @@ RUN dpkg --add-architecture i386 && \
         vim \
         file \
         python3 \
+        python3-pip \
+        clang \
+        libclang-dev \
         wget && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
@@ -38,6 +41,15 @@ RUN mkdir -p ${PIN_INSTALL_DIR} && \
     tar xzf /tmp/${PIN_TAR_NAME}.tar.gz -C ${PIN_INSTALL_DIR} && \
     rm /tmp/${PIN_TAR_NAME}.tar.gz && \
     echo "* Pin tool installed at ${PIN_ROOT}"
+
+# install compiledb
+RUN echo "* Installing compiledb via pip" && \
+    pip3 install compiledb && \
+    pip3 install clang==10.0.1 && \
+    echo "* compiledb installed successfully."
+
+# add libclang to path
+RUN ln -s /usr/lib/x86_64-linux-gnu/libclang-10.so.1 /usr/lib/x86_64-linux-gnu/libclang.so
 
 # export pin path
 ENV PATH="${PIN_ROOT}:${PATH}"

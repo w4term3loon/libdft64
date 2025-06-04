@@ -100,3 +100,6 @@ $(OBJDIR)/dummy_test$(EXE_SUFFIX): dummy_test.c
 INPUT_FILE=cur_input
 test: $(OBJDIR)/taintfuzz$(PINTOOL_SUFFIX) ${OBJDIR}/dummy_test$(EXE_SUFFIX)
 	$(PIN) -t $< -- $(OBJDIR)dummy_test$(EXE_SUFFIX)
+
+gen:
+	python3 ../gen_sig.py /usr/include/stdlib.h -o tf_std_sig.inc
