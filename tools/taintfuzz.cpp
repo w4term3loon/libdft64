@@ -21,14 +21,14 @@ struct sig_entry_t {
 /* header that *uses* the table */
 #define TF_SIG_ENTRY(name, flags, argc, ...) {name, flags, argc, {__VA_ARGS__}},
 const sig_entry_t tf_sig_table[] = {
-#include "tf_std_sig.h"
+//#include "tf_std_sig.h"
 };
 #undef TF_SIG_ENTRY
 
 // thread-local storage key
 static TLS_KEY func_tls_key;
 
-ins_desc_t tf_ins_desc[XED_ICLASS_LAST];
+ins_desc_t ins_desc[XED_ICLASS_LAST];
 
 /*
  * Exposed hook context
@@ -106,6 +106,7 @@ post_malloc_hook(tf_hook_ctx_t *ctx) {
   }
 }
 
+
 static void
 trace_uaf(INS ins);
 
@@ -116,8 +117,8 @@ trace_uaf_start() {
 
   ins_indx = XED_ICLASS_MOV;
 
-  if (unlikely(tf_ins_desc[ins_indx].pre == NULL))
-    tf_ins_desc[ins_indx].pre = trace_uaf;
+  if (unlikely(ins_desc[ins_indx].pre == NULL))
+    ins_desc[ins_indx].pre = trace_uaf;
 }
 
 static void
@@ -127,8 +128,8 @@ trace_uaf_stop() {
 
   ins_indx = XED_ICLASS_MOV;
 
-  if (unlikely(tf_ins_desc[ins_indx].pre == trace_uaf))
-    tf_ins_desc[ins_indx].pre = NULL;
+  if (unlikely(ins_desc[ins_indx].pre == trace_uaf))
+    ins_desc[ins_indx].pre = NULL;
 }
 
 static void
@@ -136,6 +137,7 @@ uaf(ADDRINT dst) {
   // printf("memory: %lx\n", dst);
   if (tag_uaf_getb(dst)) {
     logger.store_ins(TT_UAF, dst);
+    trace_uaf_stop();
   }
 }
 
@@ -144,8 +146,38 @@ trace_uaf(INS ins) {
   if (INS_OperandIsMemory(ins, 0)) {
     INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)uaf, IARG_FAST_ANALYSIS_CALL, IARG_MEMORYWRITE_EA,
                    IARG_END);
-    trace_uaf_stop(); // TODO add stop point for uaf
+    // trace_uaf_stop(); // TODO add stop point for uaf
   }
+}
+
+static void
+trace_call(INS ins) {
+  // TODO taint operation
+}
+
+static void
+trace_ret(INS ins) {
+  trace_uaf_stop();
+}
+
+static void
+trace_call_start(){
+  xed_iclass_enum_t ins_indx;
+
+  ins_indx = XED_ICLASS_CALL_FAR;
+
+  if (unlikely(ins_desc[ins_indx].pre == NULL))
+    ins_desc[ins_indx].pre = trace_call;
+}
+
+static void
+trace_ret_start(){
+  xed_iclass_enum_t ins_indx;
+
+  ins_indx = XED_ICLASS_RET_FAR;
+
+  if (unlikely(ins_desc[ins_indx].pre == NULL))
+    ins_desc[ins_indx].pre = trace_ret;
 }
 
 static void
@@ -417,6 +449,11 @@ main(int argc, char **argv) {
   tf_register_func("free", 1, pre_free_hook, post_free_hook);
 
   IMG_AddInstrumentFunction(tf_instrument_img, (VOID *)"libc");
+
+  // detect call ins for external lib call
+  trace_call_start();
+  //ret ins for uaf trace stop point
+  trace_ret_start();
 
   // register Fini function to be called when the application exits
   PIN_AddFiniFunction(fini, 0);
