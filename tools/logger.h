@@ -15,6 +15,7 @@ typedef uint64_t u64;
 typedef enum {
   TT_EXEC = 0,        //< command injection.
   TT_UAF = 1, //use after free
+  TT_BOF = 2,
 } taint_type_t;
 
 struct CondStmt {
@@ -61,10 +62,13 @@ public:
 
 class Logger {
 private:
-  u32 num_exec;
-  u32 num_uaf;
+  u32 num_exec = 0;
+  u32 end_exec = 0;
+  u32 num_uaf = 0;
+  u32 num_bof = 0;
   LogBuf exec_buf;
   LogBuf uaf_buf;
+  LogBuf bof_buf;
   std::map<u64, u32> order_map;
 
 
@@ -92,9 +96,34 @@ public:
         //exec_buf.push_bytes((char *)&type, 4);// insert struct size, args
         exec_buf.push_bytes((char *)&size, 4);
         exec_buf.push_bytes(args, size);
+        end_exec += size + 4;
         num_exec += 1;
       }
     }
+    else if (type == TT_BOF)
+    {
+      ADDRINT hash = ctx->address;
+      u32 size = 0;
+      for (int i = 0; i < (int)ctx->args.size(); i++){
+        // hash ^= ctx->args[i];// identify unique
+        size += strlen((char *)ctx->args[i]);
+        //fprintf(stdout, "args size: %d\n", size);
+      }
+      char args[size];
+      memset(args, 0, size);
+      if (order_map.count(hash) == 0 && size > 0) {
+        for (int i = 0; i< (int)ctx->args.size(); i++){
+          strcat(args,(char *)ctx->args[i]);
+        }
+        fprintf(stdout, "taint_arg: %s\n", args);
+        order_map.insert(std::pair<u64, u32>(hash, 1));
+        //exec_buf.push_bytes((char *)&type, 4);// insert struct size, args
+        exec_buf.push_bytes((char *)&size, 4);
+        exec_buf.push_bytes(args, size);
+        num_bof += 1;
+      }
+    }
+    
   }
 
   void store_ins(taint_type_t type, ADDRINT dst){
@@ -111,12 +140,18 @@ public:
       out_f = fopen("track.out", "w");
     }
 
+    fwrite(&num_uaf, 4, 1, out_f);
+
     if (num_uaf == 1){
       uaf_buf.write_file(out_f);
     }
 
     fwrite(&num_exec, 4, 1, out_f);
+    fwrite(&end_exec, 4, 1, out_f);
+    fwrite(&num_bof, 4, 1, out_f);
+
     exec_buf.write_file(out_f);
+    bof_buf.write_file(out_f);
     
 
     if (out_f) {
