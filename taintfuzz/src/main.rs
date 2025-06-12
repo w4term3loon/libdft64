@@ -79,6 +79,8 @@ use log::{error};
 use bcmp::{AlgoSpec, MatchIterator};
 use rand::{distributions::Uniform, Rng};
 
+use rlimit::{setrlimit, Resource};
+
 use clap::{Arg, Command as argCommand};
 
 static TMP_DIR: &str = "tmp";
@@ -355,7 +357,7 @@ where
 
         // handle uaf
         let num_uaf = read_struct::<u32, _>(&mut buffer)? as usize;
-        println!("{:}", num_uaf);
+        //println!("{:}", num_uaf);
         if num_uaf == 1 {
             //TODO log input as crash
             return Ok(MutationResult::Skipped);
@@ -560,6 +562,16 @@ pub fn main(){
         }
     }
 
+    // set max resources
+
+    const DEFAULT_SOFT_LIMIT: u64 = 1 * 1024 * 1024;
+    const DEFAULT_HARD_LIMIT: u64 = 2 * 1024 * 1024;
+    assert!(Resource::FSIZE.set(DEFAULT_SOFT_LIMIT, DEFAULT_HARD_LIMIT).is_ok());
+
+    let soft = 16384;
+    let hard = soft * 2;
+    assert!(setrlimit(Resource::NOFILE, soft, hard).is_ok());
+
     // fuzz
     let _ = fuzz(in_dir, out_dir, taint, pargs);
 }
@@ -654,7 +666,8 @@ fn fuzz(
         >,  
         input: &BytesInput| {
         unsafe {
-            println!("{:?}", input.target_bytes());
+            //println!("{:?}", input.target_bytes());
+            let _ = cur_file.set_len(0);
             let _ = cur_file.write_all(input.target_bytes().as_ref());
             let qemu_ret = qemu.run();
             match qemu_ret {

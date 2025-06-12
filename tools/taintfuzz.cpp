@@ -146,7 +146,7 @@ trace_uaf(INS ins) {
   if (INS_OperandIsMemory(ins, 0)) {
     INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)uaf, IARG_FAST_ANALYSIS_CALL, IARG_MEMORYWRITE_EA,
                    IARG_END);
-    // trace_uaf_stop(); // TODO add stop point for uaf
+    // trace_uaf_stop();
   }
 }
 
