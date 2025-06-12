@@ -316,7 +316,25 @@ pub struct Taintfuzz_mutate {
     file: PathBuf,
     track_bin: String,
     track_args: Vec::<String>,
+    cur_input: String,
 }
+
+pub fn get_pin_log(file: PathBuf) -> io::Result<Vec<u8>>{
+    let mut f = match File::open(file.clone()) {
+        Ok(file) => file,
+        Err(err) => {
+            panic!("could not open {:?}: {:?}", file, err);
+        },
+    };
+
+    let mut buffer = Vec::new();
+    f.read_to_end(&mut buffer).unwrap();
+    drop(f);
+    //let mut buffer = &buffer[..];
+    
+    return Ok(buffer);
+}
+
 
 impl<I, S> Mutator<I, S> for Taintfuzz_mutate
 where
@@ -332,6 +350,14 @@ where
 
         //run pin
 
+        if self.track_args.contains(&"@@".to_string()) { // for stdin input
+            for tmp in self.track_args.iter_mut(){
+                if tmp.contains(&"@@".to_string()){
+                    *tmp = self.cur_input.clone();
+                }
+            }
+        }
+
         let mut child = Command::new(&(self.track_bin.to_string()))
         .args(&(self.track_args.clone()))
         .stdin(Stdio::piped())
@@ -339,21 +365,26 @@ where
         .stderr(Stdio::null())
         .spawn().expect("Failed to spawn child process");
 
-        let mut stdin = child.stdin.take().expect("Failed to open stdin");
-        stdin.write_all(input.mutator_bytes_mut()).expect("Failed to write to stdin");
-
+        
+        if !self.track_args.contains(&"@@".to_string()) { // for stdin input
+            let mut stdin = child.stdin.take().expect("Failed to open stdin");
+            stdin.write_all(input.mutator_bytes_mut()).expect("Failed to write to stdin");
+        }
+        child.kill()?;
         // read taint info
-        let mut f = match File::open(self.file.clone()) {
-            Ok(file) => file,
-            Err(err) => {
-                panic!("could not open {:?}: {:?}", self.file, err);
-            },
-        };
 
-        let mut buffer = Vec::new();
-        f.read_to_end(&mut buffer).unwrap();
+        // let mut f = match File::open(self.file.clone()) {
+        //     Ok(file) => file,
+        //     Err(err) => {
+        //         panic!("could not open {:?}: {:?}", self.file, err);
+        //     },
+        // };
 
-        let mut buffer = &buffer[..];
+        // let mut buffer = Vec::new();
+        // f.read_to_end(&mut buffer).unwrap();
+
+        let mut log = get_pin_log(self.file.clone())?;
+        let mut buffer = &log[..];
 
         // handle uaf
         let num_uaf = read_struct::<u32, _>(&mut buffer)? as usize;
@@ -362,11 +393,14 @@ where
             //TODO log input as crash
             return Ok(MutationResult::Skipped);
         }
-
         
         let num_exec = read_struct::<u32, _>(&mut buffer)? as usize;
         let end_exec = read_struct::<u32, _>(&mut buffer)? as usize;
         let num_bof = read_struct::<u32, _>(&mut buffer)? as usize;
+
+        if num_exec == 0 && num_bof == 0 {
+            return Ok(MutationResult::Skipped);
+        }
 
         // random choose mutation
         let max_choice = 2;
@@ -450,7 +484,6 @@ where
                 result = MutationResult::Skipped;
             },
         }
-        
         Ok(result)
     }
     #[inline]
@@ -469,11 +502,12 @@ impl Named for Taintfuzz_mutate {
 impl Taintfuzz_mutate {
     /// Creates a new `Taintfuzz_mutate` struct.
     #[must_use]
-    pub fn new(file: PathBuf, track_bin: String, track_args: Vec::<String>) -> Self {
+    pub fn new(file: PathBuf, track_bin: String, track_args: Vec::<String>, cur_input: String) -> Self {
         Self{
             file,
             track_bin,
             track_args,
+            cur_input,
         }
     }
 }
@@ -808,7 +842,7 @@ fn fuzz(
 
     // Setup a randomic Input2State stage
     let i2s = StdMutationalStage::new(HavocScheduledMutator::new(tuple_list!(
-        I2SRandReplace::new(), Taintfuzz_mutate::new(cpath, track_bin, track_args)
+        I2SRandReplace::new(), Taintfuzz_mutate::new(cpath, track_bin, track_args, cur_input)
     )));
 
     // tracing stage
