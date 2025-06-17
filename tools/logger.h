@@ -100,7 +100,7 @@ public:
         num_exec += 1;
       }
     }
-    else if (type == TT_BOF)
+    else if (type == TT_BOF)// buffer overflow
     {
       ADDRINT hash = ctx->address;
       u32 size = 0;

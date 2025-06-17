@@ -53,7 +53,7 @@ use libafl::{
     monitors::SimpleMonitor,
     Error,
     state::HasCorpus,
-    corpus::{Corpus, CorpusId},
+    corpus::{Corpus, CorpusId, Testcase},
     state::{HasExecutions, HasSolutions, HasCurrentTestcase},
     feedback_or, 
     generators::RandPrintablesGenerator,
@@ -317,6 +317,7 @@ pub struct Taintfuzz_mutate {
     track_bin: String,
     track_args: Vec::<String>,
     cur_input: String,
+    uaf_list: Vec::<u64>,
 }
 
 pub fn get_pin_log(file: PathBuf) -> io::Result<Vec<u8>>{
@@ -338,7 +339,7 @@ pub fn get_pin_log(file: PathBuf) -> io::Result<Vec<u8>>{
 
 impl<I, S> Mutator<I, S> for Taintfuzz_mutate
 where
-    S: HasMetadata + HasRand + HasMaxSize,
+    S: HasMetadata + HasRand + HasMaxSize + HasExecutions + HasCorpus<I> + HasSolutions<I> + HasCurrentTestcase<I>,
     I: ResizableMutator<u8> + HasMutatorBytes + Clone,
 {
     #[expect(clippy::too_many_lines)]
@@ -371,18 +372,9 @@ where
             stdin.write_all(input.mutator_bytes_mut()).expect("Failed to write to stdin");
         }
         child.kill()?;
+
+
         // read taint info
-
-        // let mut f = match File::open(self.file.clone()) {
-        //     Ok(file) => file,
-        //     Err(err) => {
-        //         panic!("could not open {:?}: {:?}", self.file, err);
-        //     },
-        // };
-
-        // let mut buffer = Vec::new();
-        // f.read_to_end(&mut buffer).unwrap();
-
         let mut log = get_pin_log(self.file.clone())?;
         let mut buffer = &log[..];
 
@@ -390,7 +382,20 @@ where
         let num_uaf = read_struct::<u32, _>(&mut buffer)? as usize;
         //println!("{:}", num_uaf);
         if num_uaf == 1 {
-            //TODO log input as crash
+            //log input as crash
+            let uaf_addr = read_struct::<u64, _>(&mut buffer)?;
+            if (self.uaf_list.iter().find(|&&x| x == uaf_addr)).is_some() {
+                return Ok(MutationResult::Skipped);
+            }
+            self.uaf_list.push(uaf_addr);
+            let mut new_testcase = Testcase::from(input.clone());
+            new_testcase.set_executions(*state.executions());
+            new_testcase.add_metadata(ExitKind::Oom);
+            new_testcase.set_parent_id_optional(*state.corpus().current());
+            state.solutions_mut().add(new_testcase).expect("In run_observers_and_save_state solutions failure.(mutation)");
+            if let Ok(mut tc) = state.current_testcase_mut() {
+                tc.found_objective();
+            }
             return Ok(MutationResult::Skipped);
         }
         
@@ -508,6 +513,7 @@ impl Taintfuzz_mutate {
             track_bin,
             track_args,
             cur_input,
+            uaf_list: vec![],
         }
     }
 }
