@@ -28,6 +28,10 @@ const sig_entry_t tf_sig_table[] = {
 // thread-local storage key
 static TLS_KEY func_tls_key;
 
+ADDRINT low_address = 0;
+ADDRINT high_address = 0;
+ADDRINT call_addr = 0;
+
 ins_desc_t ins_desc[XED_ICLASS_LAST];
 
 /*
@@ -142,17 +146,33 @@ uaf(ADDRINT dst) {
 }
 
 static void
+unknown_func(ADDRINT a0, ADDRINT a1, ADDRINT a2, ADDRINT a3, ADDRINT a4, ADDRINT a5){
+  tf_hook_ctx_t *func_ctx = (tf_hook_ctx_t*)malloc(sizeof(tf_hook_ctx_t));
+  std::vector<ADDRINT> args_ = {a0, a1, a2, a3, a4, a5};
+  func_ctx->address = call_addr;
+  func_ctx->args = args_;
+  logger.store(TT_UNKNOWN, func_ctx);
+}
+
+static void
 trace_uaf(INS ins) {
   if (INS_OperandIsMemory(ins, 0)) {
     INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)uaf, IARG_FAST_ANALYSIS_CALL, IARG_MEMORYWRITE_EA,
                    IARG_END);
-    // trace_uaf_stop();
   }
 }
 
 static void
 trace_call(INS ins) {
-  // TODO taint operation
+  if (INS_IsDirectControlFlow(ins)){
+    call_addr = INS_DirectBranchOrCallTargetAddress(ins);
+    // fprintf(stdout, "[INF] call_addr: %ld\n", call_addr);
+    if (call_addr < low_address){
+      INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)unknown_func, IARG_FUNCARG_CALLSITE_VALUE, 0, IARG_FUNCARG_CALLSITE_VALUE, 1, IARG_FUNCARG_CALLSITE_VALUE, 2, IARG_FUNCARG_CALLSITE_VALUE, 3, IARG_FUNCARG_CALLSITE_VALUE, 4, IARG_FUNCARG_CALLSITE_VALUE, 5, 
+                      IARG_END);
+    }
+  }
+  // TODO solve indirect call such as call rbx
 }
 
 static void
@@ -164,7 +184,7 @@ static void
 trace_call_start(){
   xed_iclass_enum_t ins_indx;
 
-  ins_indx = XED_ICLASS_CALL_FAR;
+  ins_indx = XED_ICLASS_CALL_NEAR;
 
   if (unlikely(ins_desc[ins_indx].pre == NULL))
     ins_desc[ins_indx].pre = trace_call;
@@ -174,7 +194,7 @@ static void
 trace_ret_start(){
   xed_iclass_enum_t ins_indx;
 
-  ins_indx = XED_ICLASS_RET_FAR;
+  ins_indx = XED_ICLASS_RET_NEAR;
 
   if (unlikely(ins_desc[ins_indx].pre == NULL))
     ins_desc[ins_indx].pre = trace_ret;
@@ -368,6 +388,24 @@ tf_instrument_rtn(
 /*  match_func cmp;*/
 /*} probe_ctx_t;*/
 
+void InstImage(IMG img, void* v)
+{
+  if (low_address != 0) return;// can only get got
+
+  SEC sec = IMG_SecHead(img);
+  while (SEC_Type(sec) != SEC_TYPE_GOT){
+    sec = SEC_Next(sec);
+    if (sec == SEC_Invalid()){
+      break;
+    }
+  }
+
+  low_address = SEC_Address(sec);
+  high_address = low_address + SEC_Size(sec);
+
+}
+
+
 static VOID
 tf_instrument_img(IMG img, VOID *lib) {
   /*probe_ctx_t *ctx = (probe_ctx_t *)pc;*/
@@ -447,6 +485,8 @@ main(int argc, char **argv) {
   tf_register_func("malloc", 1, pre_malloc_hook, post_malloc_hook);
   tf_register_func("system", 1, pre_system_hook, nullptr);
   tf_register_func("free", 1, pre_free_hook, post_free_hook);
+
+  IMG_AddInstrumentFunction(InstImage, 0);
 
   IMG_AddInstrumentFunction(tf_instrument_img, (VOID *)"libc");
 
