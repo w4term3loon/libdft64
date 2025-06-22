@@ -20,7 +20,7 @@ typedef enum {
   TS_IPC = 5,         //< data from IPC mechanisms.
   TS_HEAP = 6,        //< data from heap allocations.
   TS_ARGUMENT = 7,    //< data from function arguments.
-  TS_RETURN = 8,      //< data from function returns.
+  TS_FREED = 8,       //< data from function returns.
   TS_CUSTOM1 = 9,     //< custom source type 1.
   TS_CUSTOM2 = 10,    //< custom source type 2.
   TS_CUSTOM3 = 11,    //< custom source type 3.

@@ -74,18 +74,18 @@ public:
   void store(taint_type_t type, tf_hook_ctx_t *ctx){
     //fprintf(stdout, "[LOGGER] start store\n");
     if (type == TT_EXEC){// command injection 
-      ADDRINT hash = ctx->address;
+      ADDRINT hash = ctx->func_addr;
       u32 size = 0;
-      for (int i = 0; i < (int)ctx->args.size(); i++){
-        // hash ^= ctx->args[i];// identify unique
-        size += strlen((char *)ctx->args[i]);
+      for (int i = 0; i < (int)ctx->arg_val.size(); i++){
+        // hash ^= ctx->arg_val[i];// identify unique
+        size += strlen((char *)ctx->arg_val[i]);
         //fprintf(stdout, "args size: %d\n", size);
       }
       char args[size];
       memset(args, 0, size);
       if (order_map.count(hash) == 0 && size > 0) {
-        for (int i = 0; i< (int)ctx->args.size(); i++){
-          strcat(args,(char *)ctx->args[i]);
+        for (int i = 0; i< (int)ctx->arg_val.size(); i++){
+          strcat(args,(char *)ctx->arg_val[i]);
         }
         fprintf(stdout, "taint_arg: %s\n", args);
         order_map.insert(std::pair<u64, u32>(hash, 1));
