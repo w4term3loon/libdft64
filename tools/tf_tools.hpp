@@ -13,6 +13,16 @@
 
 #include "tf_gen.hpp"
 
+#include "tf_type.hpp"
+
+// Unified logging macros for consistency
+#define LOG_INFO(fmt, ...) fprintf(stdout, "[INFO] " fmt "\n", ##__VA_ARGS__)
+#define LOG_ERROR(fmt, ...) fprintf(stderr, "[ERROR] " fmt "\n", ##__VA_ARGS__)
+#define LOG_WARN(fmt, ...) fprintf(stdout, "[WARN] " fmt "\n", ##__VA_ARGS__)
+#define LOG_DEBUG(fmt, ...) fprintf(stdout, "[DEBUG] " fmt "\n", ##__VA_ARGS__)
+#define LOG_TAINT(fmt, ...) fprintf(stdout, "[TAINT] " fmt "\n", ##__VA_ARGS__)
+#define LOG_ALERT(fmt, ...) fprintf(stdout, "[ALERT] " fmt "\n", ##__VA_ARGS__)
+
 /*
  * Exposed context for pre-post HOOK communication
  */
@@ -26,9 +36,17 @@ struct tf_hook_ctx_t {
   uintptr_t etc;
 };
 
+// Global logger instance
+#include "logger.h"
+static Logger logger;
+
 // --- Generic Hook Callbacks ---
 static void
 generic_pre(tf_hook_ctx_t *ctx) {
+  if (!ctx) {
+    LOG_ERROR("T%d: NULL context in generic_pre", PIN_ThreadId());
+    return;
+  }
 
   // fetch the memory mapping
   // from /proc/self/maps
@@ -40,12 +58,13 @@ generic_pre(tf_hook_ctx_t *ctx) {
 
   // SOURCE
   if (flags & IO_SRC) {
-    fprintf(stdout, "[PRE] Found source: %s\n", ctx->name.c_str());
+    // TODO: maybe some logging, but for now this is just confusing
+    // LOG_DEBUG("T%d: Found source: %s", ctx->tid, ctx->name.c_str());
   }
 
   // SINK
   if (flags & IO_SINK) {
-    fprintf(stdout, "[PRE] Found sink: %s\n", ctx->name.c_str());
+    LOG_DEBUG("T%d: Found sink: %s", ctx->tid, ctx->name.c_str());
 
     // iterate over argument values
     for (size_t i = 0; i < ctx->arg_val.size(); i++) {
@@ -54,17 +73,16 @@ generic_pre(tf_hook_ctx_t *ctx) {
       // pointer input values in the accessible
       // memory regions
       if (type == HEAP_PTR || type == STACK_PTR) {
-
         size_t len = tf_mem_get_size((void *)ctx->arg_val[i]);
         if (len > 0 && tf_region_check((void *)ctx->arg_val[i], len)) {
-          fprintf(stdout, "[!!!] ALERT: SINK %s touched tainted data at 0x%lx\n", ctx->name.c_str(),
-                  ctx->arg_val[i]);
+          LOG_ALERT("T%d: SINK %s touched tainted data at 0x%lx", ctx->tid, ctx->name.c_str(),
+                    ctx->arg_val[i]);
         }
       }
 
       // mapped memory regions
       else if (type == MAPPED_PTR || type == LIB_PTR) {
-        // TODO: probbably should not fidget there, but data values are sometimes there
+        // TODO: probably should not fidget there, but data values are sometimes there
         // check for TS_ENVIRONMENT
         tf_region_check((void *)ctx->arg_val[i], 1);
       }
@@ -75,10 +93,14 @@ generic_pre(tf_hook_ctx_t *ctx) {
       }
 
       else {
-        // check the smalles int storage value amount of bytes
+        // check the smallest int storage value amount of bytes
         // to make sure to avoid false positives
         // TODO: get size from heuristics
-        tf_region_check((void *)ctx->arg_addr[i], sizeof(short));
+        if (i < ctx->arg_addr.size() && ctx->arg_addr[i]) {
+          tf_region_check((void *)ctx->arg_addr[i], sizeof(short));
+        } else {
+          LOG_WARN("T%d: Invalid arg_addr[%zu] for function %s", ctx->tid, i, ctx->name.c_str());
+        }
       }
     }
   }
@@ -86,6 +108,10 @@ generic_pre(tf_hook_ctx_t *ctx) {
 
 static void
 generic_post(tf_hook_ctx_t *ctx) {
+  if (!ctx) {
+    LOG_ERROR("T%d: NULL context in generic_post", PIN_ThreadId());
+    return;
+  }
 
   // fetch the memory mapping
   // from /proc/self/maps
@@ -98,7 +124,7 @@ generic_post(tf_hook_ctx_t *ctx) {
 
   // SOURCE
   if (flags & IO_SRC) {
-    fprintf(stdout, "[PST] Found source: %s\n", ctx->name.c_str());
+    LOG_DEBUG("T%d: Found source: %s", ctx->tid, ctx->name.c_str());
 
     // RETURN: suspect allocation if return value points to HEAP
     // suspect string return if points to the stack
@@ -108,63 +134,69 @@ generic_post(tf_hook_ctx_t *ctx) {
       tf_type_t ret_type = tf_check_type(ctx->ret_val);
 
       if (ret_type == HEAP_PTR) {
+
+        size_t potential_size = 1;
         for (size_t i = 0; i < ctx->arg_val.size(); i++) {
 
           // TODO: use first now, come up with better
           // if we find a size argument
           if (tf_check_type(ctx->arg_val[i]) == SIZE_ARG) {
-
-            size_t potential_size = (size_t)ctx->arg_val[i];
-
-            // register and taint memory region
-            tf_mem_register((void *)ctx->ret_val, potential_size);
-            tf_region_taint((void *)ctx->ret_val, potential_size, TS_HEAP, 1);
-            fprintf(stdout, "[TNT] Marked return value 0x%lx[%zu] as tainted\n", ctx->ret_val,
-                    potential_size);
-
+            potential_size = (size_t)ctx->arg_val[i];
             break;
           }
         }
+
+        // register and taint memory region with sizearg
+        // if found, if not, taint 1 byte TODO: do better
+        tf_mem_register((void *)ctx->ret_val, potential_size);
+        tf_region_taint((void *)ctx->ret_val, potential_size, TS_HEAP, 1);
+        LOG_TAINT("T%d: Marked return value 0x%lx[%zu] as tainted for %s", ctx->tid, ctx->ret_val,
+                  potential_size, ctx->name.c_str());
+
       }
 
-      // THIS NEVER HAPPENS IN C
-      // strings or buffer, same method
+      // THIS IS VERY JANKY, specific for glibc
+      // strings or buffer, same method, or environment variables are
+      // copied by __libc_start_main, but can be totally different in other libs
+      // TODO: implement functionality for musl.c and later for other libraries
       else if (ret_type == STACK_PTR) {
+
+        size_t potential_size = 1;
         for (size_t i = 0; i < ctx->arg_val.size(); i++) {
 
           // TODO: use first now, come up with better
           // if we find a size argument
           if (tf_check_type(ctx->arg_val[i]) == SIZE_ARG) {
-
-            size_t potential_size = (size_t)ctx->arg_val[i];
-
-            // register and taint memory region
-            tf_mem_register((void *)ctx->ret_val, potential_size);
-            tf_region_taint((void *)ctx->ret_val, potential_size, TS_NONE, 1);
-            fprintf(stdout, "[TNT] Marked return value 0x%lx[%zu] as tainted\n", ctx->ret_val,
-                    potential_size);
-
+            potential_size = (size_t)ctx->arg_val[i];
             break;
           }
         }
+
+        // register and taint memory region
+        tf_mem_register((void *)ctx->ret_val, potential_size);
+        tf_region_taint((void *)ctx->ret_val, potential_size, TS_STACK, 1);
+        LOG_TAINT("T%d: Marked return value 0x%lx[%zu] as tainted for %s", ctx->tid, ctx->ret_val,
+                  potential_size, ctx->name.c_str());
       }
 
       else if (ret_type == INVALID_PTR) {
-        fprintf(stdout, "[TNT] Return value 0x%lx is invalid pointer - not tainting\n",
-                ctx->ret_val);
+        LOG_WARN("T%d: Return value 0x%lx is invalid pointer - not tainting for %s", ctx->tid,
+                 ctx->ret_val, ctx->name.c_str());
       }
 
       // TODO: this usually allocates memory internally
       // or just points to the data section that is on the readonly stack
       else if (ret_type == LIB_PTR || ret_type == MAPPED_PTR) {
         tf_region_taint((void *)ctx->ret_val, 1, TS_ENVIRONMENT, 1);
-        fprintf(stdout, "[TNT] Return value 0x%lx points to library/mapped memory - monitoring\n",
-                ctx->ret_val);
+        LOG_TAINT("T%d: Return value 0x%lx points to library/mapped memory - monitoring for %s",
+                  ctx->tid, ctx->ret_val, ctx->name.c_str());
       }
 
       else {
         // NUMERICAL VALUES
         // TODO: what do we do here? maybe propagate the return register to taint that??
+        LOG_DEBUG("T%d: Return value 0x%ld is numerical value for %s, nothing to do for now",
+                  ctx->tid, ctx->ret_val, ctx->name.c_str());
       }
     }
 
@@ -183,11 +215,10 @@ generic_post(tf_hook_ctx_t *ctx) {
         for (size_t j = i + 1; j < ctx->arg_val.size(); ++j) {
           ADDRINT potential_size = ctx->arg_val[j];
 
-          // use the first size parameter
-          if (tf_check_type(potential_size)) {
+          if (tf_check_type(potential_size) == SIZE_ARG) {
             len = potential_size;
-            fprintf(stdout, "[TNT] Using arg[%zu] = %zu as size for pointer arg[%zu] = 0x%lx\n", j,
-                    len, i, arg);
+            LOG_DEBUG("T%d: Using arg[%zu] = %zu as size for pointer arg[%zu] = 0x%lx in %s",
+                      ctx->tid, j, len, i, arg, ctx->name.c_str());
             break;
           }
         }
@@ -197,24 +228,23 @@ generic_post(tf_hook_ctx_t *ctx) {
 
           case HEAP_PTR:
             tf_region_taint((void *)arg, len, TS_HEAP, 1);
-            fprintf(stdout, "[TNT] Marked arg[%zu] = 0x%lx[%zu] as tainted on HEAP\n", i, arg, len);
+            LOG_TAINT("T%d: Marked arg[%zu] = 0x%lx[%zu] as tainted on HEAP for %s", ctx->tid, i,
+                      arg, len, ctx->name.c_str());
             break;
 
           case STACK_PTR:
             tf_region_taint((void *)arg, len, TS_ARGUMENT, 1);
-            fprintf(stdout, "[TNT] Marked arg[%zu] = 0x%lx[%zu] as tainted on STACK\n", i, arg,
-                    len);
+            LOG_TAINT("T%d: Marked arg[%zu] = 0x%lx[%zu] as tainted on STACK for %s", ctx->tid, i,
+                      arg, len, ctx->name.c_str());
             break;
 
           default:
             assert(0); //< unreachable
             break;
           }
-        }
-
-        else {
-          fprintf(stdout, "[TNT] Out param arg[%zu] = 0x%lx[%zu] was not registered.\n", i, arg,
-                  len);
+        } else {
+          LOG_WARN("T%d: Out param arg[%zu] = 0x%lx was not registered for %s (no size found)",
+                   ctx->tid, i, arg, ctx->name.c_str());
         }
       }
     }
@@ -222,86 +252,9 @@ generic_post(tf_hook_ctx_t *ctx) {
 
   // SINK
   if (flags & IO_SINK) {
-    fprintf(stdout, "[PST] Found sink: %s\n", ctx->name.c_str());
+    // TODO: maybe some logging, but for now this is just confusing
+    // LOG_DEBUG("T%d: Found sink: %s", ctx->tid, ctx->name.c_str());
   }
-}
-
-// --- LibC Specific Overrides ---
-// TODO: move to the demo
-ins_desc_t tf_ins_desc[XED_ICLASS_LAST];
-#include "logger.h"
-Logger logger;
-
-void
-trace_uaf(INS ins);
-
-void
-trace_uaf_start() {
-  xed_iclass_enum_t ins_indx;
-  ins_indx = XED_ICLASS_MOV;
-  if (unlikely(tf_ins_desc[ins_indx].pre == NULL))
-    tf_ins_desc[ins_indx].pre = trace_uaf;
-}
-
-void
-trace_uaf_stop() {
-  xed_iclass_enum_t ins_indx;
-  ins_indx = XED_ICLASS_MOV;
-  if (unlikely(tf_ins_desc[ins_indx].pre == trace_uaf))
-    tf_ins_desc[ins_indx].pre = NULL;
-}
-
-void
-uaf(ADDRINT dst) {
-  // printf("memory: %lx\n", dst);
-  if (tag_uaf_getb(dst)) {
-    // logger.store_ins(TT_UAF, dst);
-  }
-}
-
-void
-trace_uaf(INS ins) {
-  if (INS_OperandIsMemory(ins, 0)) {
-    INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)uaf, IARG_FAST_ANALYSIS_CALL, IARG_MEMORYWRITE_EA,
-                   IARG_END);
-    trace_uaf_stop(); // TODO add stop point for uaf
-  }
-}
-
-void
-pre_free_hook(tf_hook_ctx_t *ctx) {
-
-  void *addr = (void *)ctx->arg_val[0];
-  size_t size = tf_mem_get_size(addr); //< fetch from memmng
-
-  // exists in memmng
-  if (addr && size) {
-    if (tf_mem_is_freed(addr) && tf_region_check(addr, size)) {
-      fprintf(stdout, "[!!!] T%d: free(ptr=0x%p[%zu]), found use after free!\n", ctx->tid,
-              addr, size);
-      return;
-    }
-
-    // clear taint and region from memmng
-    tf_mem_free((void *)addr);
-    tf_region_clear((void *)addr, size);
-    fprintf(stdout, "[PFH] T%d: free(ptr=0x%lx), cleared %zu bytes of taint.\n", ctx->tid,
-            (unsigned long)addr, size);
-
-    // apply freed taint, for use after frees
-    tf_region_taint((void *)addr, size, TS_FREED, 1);
-
-  } else {
-    fprintf(stdout, "[PFH] T%d: free(ptr=NULL) called, unknown address.\n", ctx->tid);
-  }
-}
-
-void
-post_free_hook(tf_hook_ctx_t *ctx) {
-
-  // make sure that MOV instructions do not clear the freed taint
-  // fromt the freed memory regions
-  trace_uaf_start();
 }
 
 /*
@@ -320,30 +273,38 @@ void
 tf_override_func(std::string name, func_cb_t pre, func_cb_t post) {
   auto it = tf_func_registry.find(name);
   if (it == tf_func_registry.end()) {
-    fprintf(stdout, "[INF] Function %s is not yet registered.\n", name.c_str());
+    LOG_WARN("Function %s is not yet registered", name.c_str());
     return;
   }
 
   tf_func_registry[name].pre = pre;
   tf_func_registry[name].post = post;
+  LOG_INFO("Overridden callbacks for function: %s", name.c_str());
 }
 
 void
 tf_register_func(sig_entry_t *sig, func_cb_t pre, func_cb_t post) {
+  if (!sig) {
+    LOG_ERROR("Cannot register function: NULL signature");
+    return;
+  }
+
   auto it = tf_func_registry.find(sig->name);
   if (it != tf_func_registry.end()) {
-    fprintf(stdout, "[INF] Function %s already registered, skipping\n", sig->name.c_str());
+    LOG_WARN("Function %s already registered, skipping", sig->name.c_str());
     return;
   }
   tf_func_registry[sig->name] = hook_t{sig, pre, post};
-  fprintf(stdout, "[INF] Registered function: %s\n", sig->name.c_str());
+  LOG_INFO("Registered function: %s", sig->name.c_str());
 }
 
 void
 tf_register_all() {
+  LOG_INFO("Registering all functions from signature table");
   for (sig_entry_t &s : tf_sig_table) {
     tf_register_func(&s, generic_pre, generic_post);
   }
+  LOG_INFO("Finished registering %zu functions", tf_func_registry.size());
 }
 
 /*
@@ -393,11 +354,13 @@ tf_pre_handler(THREADID tid, CONTEXT *ctx, ADDRINT func_addr, ADDRINT ret_addr, 
 
   tf_thread_ctx_t *thread_ctx = new tf_thread_ctx_t();
   if (!thread_ctx) {
-    fprintf(stderr, "[ERR] T%d: Failed to allocate tf_thread_ctx_t for %s\n", tid,
-            func_name.c_str());
+    LOG_ERROR("T%d: Failed to allocate tf_thread_ctx_t for %s", tid, func_name.c_str());
     PIN_SetThreadData(func_tls_key, NULL, tid);
     return;
   }
+
+  // Initialize the context
+  // memset(thread_ctx, 0, sizeof(tf_thread_ctx_t));
 
   thread_ctx->func_ctx.name = func->first;
   thread_ctx->func_ctx.tid = tid;
@@ -408,6 +371,13 @@ tf_pre_handler(THREADID tid, CONTEXT *ctx, ADDRINT func_addr, ADDRINT ret_addr, 
   // clear args vectors before adding new arguments
   thread_ctx->func_ctx.arg_addr.clear();
   thread_ctx->func_ctx.arg_val.clear();
+
+  // Validate nargs to prevent out-of-bounds access
+  if (nargs > 6) {
+    LOG_WARN("T%d: Function %s has %u args, but only 6 are supported", tid, func_name.c_str(),
+             nargs);
+    nargs = 6; // Cap at maximum supported
+  }
 
   // add only the arguments the function expects
   if (nargs > 0) {
@@ -463,6 +433,8 @@ tf_post_handler(THREADID tid, CONTEXT *ctx, ADDRINT func_addr, ADDRINT ret_val) 
 
     // sanity check
     if (func == tf_func_registry.end()) {
+      LOG_WARN("T%d: Function %s not found in registry during post-handler", tid,
+               func_name.c_str());
       delete thread_ctx; // Prevent memory leak
       PIN_SetThreadData(func_tls_key, NULL, tid);
       return;
@@ -474,6 +446,8 @@ tf_post_handler(THREADID tid, CONTEXT *ctx, ADDRINT func_addr, ADDRINT ret_val) 
     }
 
     delete thread_ctx;
+  } else {
+    LOG_WARN("T%d: No thread context found for function at 0x%lx", tid, func_addr);
   }
 
   PIN_SetThreadData(func_tls_key, NULL, tid);
@@ -490,10 +464,10 @@ tf_instrument_rtn(
 
   // invalid
   if (!RTN_Valid(rtn)) {
-    fprintf(stderr, "[ERR] Attempted to instrument invalid routine: %s\n", func_name.c_str());
+    LOG_ERROR("Attempted to instrument invalid routine: %s", func_name.c_str());
     return;
   } else {
-    fprintf(stdout, "[INF] Instrumenting function: %s\n", func_name.c_str());
+    LOG_INFO("Instrumenting function: %s", func_name.c_str());
   }
 
   RTN_Open(rtn);
@@ -507,6 +481,12 @@ tf_instrument_rtn(
       hook = entry.second;
       break;
     }
+  }
+
+  if (hook.sig == nullptr) {
+    LOG_WARN("No hook signature found for function: %s", func_name.c_str());
+    RTN_Close(rtn);
+    return;
   }
 
   if (hook.pre != nullptr) {
@@ -530,18 +510,11 @@ tf_instrument_rtn(
   RTN_Close(rtn);
 }
 
-/*typedef struct {*/
-/*  const char *lib;*/
-/*  match_func cmp;*/
-/*} probe_ctx_t;*/
-
 static VOID
 tf_instrument_img(IMG img, VOID *lib) {
-  /*probe_ctx_t *ctx = (probe_ctx_t *)pc;*/
-
   // invalid
   if (!IMG_Valid(img)) {
-    fprintf(stderr, "[ERR] Attempted to process invalid image\n");
+    LOG_ERROR("Attempted to process invalid image");
     return;
   }
 
@@ -550,17 +523,22 @@ tf_instrument_img(IMG img, VOID *lib) {
     return;
   }
 
-  fprintf(stdout, "[INF] Processing image: %s\n", IMG_Name(img).c_str());
+  LOG_INFO("Processing image: %s", IMG_Name(img).c_str());
+  size_t instrumented_count = 0;
+
   for (const auto &kv : tf_func_registry) {
     std::string func_name = kv.first;
 
     RTN rtn = RTN_FindByName(img, func_name.c_str());
     ADDRINT addr = RTN_Address(rtn);
+
+    // Look for symbol aliases at the same address
     for (SYM sym = IMG_RegsymHead(img); SYM_Valid(sym); sym = SYM_Next(sym)) {
       if (SYM_Address(sym) == addr) {
         // override the hooked name found in the lib
-        // with the first funcion on the same address
+        // with the first function on the same address
         rtn = RTN_FindByName(img, SYM_Name(sym).c_str());
+        break;
       }
     }
 
@@ -571,16 +549,20 @@ tf_instrument_img(IMG img, VOID *lib) {
 
     // instrument
     tf_instrument_rtn(rtn);
+    instrumented_count++;
   }
+
+  LOG_INFO("Instrumented %zu functions in image: %s", instrumented_count, IMG_Name(img).c_str());
 }
 
 static VOID
 fini(INT32 code, VOID *v) {
+  LOG_INFO("Application finished with code %d. Cleaning up function registry.", code);
   logger.save_buffers();
-  fprintf(stdout, "[INF] Application finished. Cleaning up function registry.\n");
   tf_func_registry.clear();
   tf_mem_die();
   libdft_die();
+  LOG_INFO("Cleanup completed.");
 }
 
 #endif // !TF_TOOLS_H
