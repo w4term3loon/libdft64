@@ -137,18 +137,18 @@ public:
   void store(taint_type_t type, tf_hook_ctx_t *ctx){
     //fprintf(stdout, "[LOGGER] start store\n");
     if (type == TT_EXEC){// command injection 
-      ADDRINT hash = ctx->address;
+      ADDRINT hash = ctx->func_addr;
       u32 size = 0;
-      for (int i = 0; i < (int)ctx->args.size(); i++){
+      for (int i = 0; i < (int)ctx->arg_val.size(); i++){
         // hash ^= ctx->args[i];// identify unique
-        size += strlen((char *)ctx->args[i]);
+        size += strlen((char *)ctx->arg_val[i]);
         //fprintf(stdout, "args size: %d\n", size);
       }
       char args[size];
       memset(args, 0, size);
       if (order_map.count(hash) == 0 && size > 0) {
-        for (int i = 0; i< (int)ctx->args.size(); i++){
-          strcat(args,(char *)ctx->args[i]);
+        for (int i = 0; i< (int)ctx->arg_val.size(); i++){
+          strcat(args,(char *)ctx->arg_val[i]);
         }
         fprintf(stdout, "taint_arg: %s\n", args);
         order_map.insert(std::pair<u64, u32>(hash, 1));
@@ -161,18 +161,18 @@ public:
     }
     else if (type == TT_BOF)// buffer overflow
     {
-      ADDRINT hash = ctx->address;
+      ADDRINT hash = ctx->func_addr;
       u32 size = 0;
-      for (int i = 0; i < (int)ctx->args.size(); i++){
+      for (int i = 0; i < (int)ctx->arg_val.size(); i++){
         // hash ^= ctx->args[i];// identify unique
-        size += strlen((char *)ctx->args[i]);
+        size += strlen((char *)ctx->arg_val[i]);
         //fprintf(stdout, "args size: %d\n", size);
       }
       char args[size];
       memset(args, 0, size);
       if (order_map.count(hash) == 0 && size > 0) {
-        for (int i = 0; i< (int)ctx->args.size(); i++){
-          strcat(args,(char *)ctx->args[i]);
+        for (int i = 0; i< (int)ctx->arg_val.size(); i++){
+          strcat(args,(char *)ctx->arg_val[i]);
         }
         fprintf(stdout, "taint_arg: %s\n", args);
         order_map.insert(std::pair<u64, u32>(hash, 1));
@@ -185,30 +185,29 @@ public:
     }
     else if (type == TT_UNKNOWN){
       // TODO handle different type parameters
-      ADDRINT hash = ctx->address;
+      ADDRINT hash = ctx->func_addr;
       u32 size = 0;
-      // fprintf(stdout, "start: %ld, end: %ld\n", total_start, total_end);
-      for (int i = 0; i < (int)ctx->args.size(); i++){
+      for (int i = 0; i < (int)ctx->arg_val.size(); i++){
         // hash ^= ctx->args[i];// identify unique
         int j = 0;
-        while(ctx->args[i] >= total_end[j] && j < (int)(total_end.size()-1)){
+        while(ctx->arg_val[i] >= total_end[j] && j < (int)(total_end.size()-1)){
           j++;
         }
-        if (ctx->args[i] >= total_start[j] && ctx->args[i] <= total_end[j] && (int)ctx->args[i] > 0) {
-          size += strlen((char *)ctx->args[i]);
+        if (ctx->arg_val[i] >= total_start[j] && ctx->arg_val[i] <= total_end[j] && (int)ctx->arg_val[i] > 0) {
+          size += strlen((char *)ctx->arg_val[i]);
         }
         //fprintf(stdout, "args size: %d\n", size);
       }
       char args[size];
       memset(args, 0, size);
       if (order_map.count(hash) == 0 && size > 0) {
-        for (int i = 0; i< (int)ctx->args.size(); i++){
+        for (int i = 0; i< (int)ctx->arg_val.size(); i++){
           int j = 0;
-          while(ctx->args[i] >= total_end[j] && j < (int)(total_end.size()-1)){
+          while(ctx->arg_val[i] >= total_end[j] && j < (int)(total_end.size()-1)){
             j++;
           }
-          if (ctx->args[i] >= total_start[j] && ctx->args[i] <= total_end[j] && (int)ctx->args[i] > 0) {
-            strcat(args,(char *)ctx->args[i]);
+          if (ctx->arg_val[i] >= total_start[j] && ctx->arg_val[i] <= total_end[j] && (int)ctx->arg_val[i] > 0) {
+            strcat(args,(char *)ctx->arg_val[i]);
           }
         }
         order_map.insert(std::pair<u64, u32>(hash, 1));
