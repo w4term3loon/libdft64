@@ -149,9 +149,11 @@ static void
 unknown_func(ADDRINT a0, ADDRINT a1, ADDRINT a2, ADDRINT a3, ADDRINT a4, ADDRINT a5){
   tf_hook_ctx_t *func_ctx = (tf_hook_ctx_t*)malloc(sizeof(tf_hook_ctx_t));
   std::vector<ADDRINT> args_ = {a0, a1, a2, a3, a4, a5};
-  func_ctx->address = call_addr;
-  func_ctx->args = args_;
-  logger.store(TT_UNKNOWN, func_ctx);
+  if (tf_region_check((void *)a1, 1) || tf_region_check((void *)a2, 1) || tf_region_check((void *)a3, 1) || tf_region_check((void *)a4, 1) || tf_region_check((void *)a5, 1)){
+    func_ctx->address = call_addr;
+    func_ctx->args = args_;
+    logger.store(TT_UNKNOWN, func_ctx);
+  }
 }
 
 static void
@@ -175,6 +177,27 @@ trace_call(INS ins) {
   // TODO solve indirect call such as call rbx
 }
 
+static void trace_cmp(INS ins);
+
+static void
+trace_cmp_stop(){
+  xed_iclass_enum_t ins_indx;
+
+  ins_indx = XED_ICLASS_CMP;
+
+  if (unlikely(ins_desc[ins_indx].pre == trace_cmp))
+    ins_desc[ins_indx].pre = NULL;
+}
+
+static void
+trace_cmp(INS ins){
+  if (INS_OperandIsReg(ins, 0) && INS_OperandIsImmediate(ins, 1)) {
+    ADDRINT addr = INS_Address(ins);
+    logger.store_cmp_ins(TT_CMP, addr);
+  }
+  trace_cmp_stop();
+}
+
 static void
 trace_ret(INS ins) {
   trace_uaf_stop();
@@ -188,6 +211,16 @@ trace_call_start(){
 
   if (unlikely(ins_desc[ins_indx].pre == NULL))
     ins_desc[ins_indx].pre = trace_call;
+}
+
+static void
+trace_cmp_start(){
+  xed_iclass_enum_t ins_indx;
+
+  ins_indx = XED_ICLASS_CMP;
+
+  if (unlikely(ins_desc[ins_indx].pre == NULL))
+    ins_desc[ins_indx].pre = trace_cmp;
 }
 
 static void
@@ -220,6 +253,24 @@ pre_free_hook(tf_hook_ctx_t *ctx) {
 static void
 post_free_hook(tf_hook_ctx_t *ctx) {
   trace_uaf_start();
+}
+
+static void
+pre_strcmp_hook(tf_hook_ctx_t *ctx) {
+  char *dst = (char *)ctx->args[0];
+  char *src = (char *)ctx->args[1];
+  int taint_dst = 0;
+  int taint_src = 0;
+  if (tf_region_check((void *)dst, strlen(dst))){
+    taint_dst = 1;
+  }
+  if (tf_region_check((void *)src, strlen(src))){
+    taint_src = 1;
+  }
+  if (taint_src || taint_dst){
+    logger.store_cmp_pre(TT_CMP, dst, src, taint_dst, taint_src);
+    trace_cmp_start();
+  }
 }
 
 // --- Pin Instrumentation Callbacks ---
@@ -485,6 +536,7 @@ main(int argc, char **argv) {
   tf_register_func("malloc", 1, pre_malloc_hook, post_malloc_hook);
   tf_register_func("system", 1, pre_system_hook, nullptr);
   tf_register_func("free", 1, pre_free_hook, post_free_hook);
+  tf_register_func("strcmp", 2, pre_strcmp_hook, nullptr);
 
   IMG_AddInstrumentFunction(InstImage, 0);
 
@@ -494,6 +546,7 @@ main(int argc, char **argv) {
   trace_call_start();
   //ret ins for uaf trace stop point
   trace_ret_start();
+
 
   // register Fini function to be called when the application exits
   PIN_AddFiniFunction(fini, 0);

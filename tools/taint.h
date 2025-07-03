@@ -260,7 +260,7 @@ tf_region_clear(void *addr, size_t size) {
  */
 bool
 tf_region_check(void *addr, size_t size) {
-  if (unlikely(!addr || size == 0)) {
+  if (unlikely(!addr || size == 0 || (uint64_t)addr >= 0xffffffffffff)) {
     TAINT_DEBUG("Invalid parameters (addr=%p, size=%zu).", addr, size);
     return false;
   }
