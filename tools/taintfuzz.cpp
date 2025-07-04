@@ -1,89 +1,6 @@
 #include "tf_tools.hpp"
 
 // --- LibC Specific Overrides ---
-ins_desc_t ins_desc[XED_ICLASS_LAST];
-
-void
-trace_uaf(INS ins);// actual trace for logging
-
-void
-trace_uaf_start() {// a start function to implement trace uaf
-  xed_iclass_enum_t ins_indx;
-  ins_indx = XED_ICLASS_MOV;
-  if (unlikely(ins_desc[ins_indx].pre == NULL))
-    ins_desc[ins_indx].pre = trace_uaf;
-}
-
-void
-trace_uaf_stop() {// a stop function to stop trace
-  xed_iclass_enum_t ins_indx;
-  ins_indx = XED_ICLASS_MOV;
-  if (unlikely(ins_desc[ins_indx].pre == trace_uaf))
-    ins_desc[ins_indx].pre = NULL;
-}
-
-void
-uaf(ADDRINT dst) {// check taint and log
-  // printf("memory: %lx\n", dst);
-  if (tag_uaf_getb(dst)) {
-    logger.store_ins(TT_UAF, dst);
-    trace_uaf_stop();
-  }
-}
-
-void
-trace_uaf(INS ins) {// call uaf to trace
-  if (INS_OperandIsMemory(ins, 0)) {
-    INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)uaf, IARG_FAST_ANALYSIS_CALL, IARG_MEMORYWRITE_EA,
-                   IARG_END);
-  }
-}
-
-static void trace_cmp(INS ins);
-
-static void
-trace_cmp_stop(){// a stop function for stopping trace cmp
-  xed_iclass_enum_t ins_indx;
-
-  ins_indx = XED_ICLASS_CMP;
-
-  if (unlikely(ins_desc[ins_indx].pre == trace_cmp))
-    ins_desc[ins_indx].pre = NULL;
-}
-
-static void
-trace_cmp(INS ins){//log cmp instruction address
-  if (INS_OperandIsReg(ins, 0) && INS_OperandIsImmediate(ins, 1)) {
-    ADDRINT addr = INS_Address(ins);
-    logger.store_cmp_ins(TT_CMP, addr);
-  }
-  trace_cmp_stop();
-}
-
-static void
-trace_cmp_start(){// start trace cmp
-  xed_iclass_enum_t ins_indx;
-
-  ins_indx = XED_ICLASS_CMP;
-
-  if (unlikely(ins_desc[ins_indx].pre == NULL))
-    ins_desc[ins_indx].pre = trace_cmp;
-}
-
-static void
-trace_ret(INS ins) {// after return, stop tracing uaf to reduce overload
-  trace_uaf_stop();
-}
-
-static void
-trace_ret_start(){// start tracing ret
-  xed_iclass_enum_t ins_indx;
-
-  ins_indx = XED_ICLASS_RET_NEAR;
-
-  if (unlikely(ins_desc[ins_indx].pre == NULL))
-    ins_desc[ins_indx].pre = trace_ret;
-}
 
 void
 pre_free_hook(tf_hook_ctx_t *ctx) {
@@ -161,9 +78,6 @@ main(int argc, char **argv) {
 
   // for uaf detection, we check each time ret, if there is uaf tracing, stop it. (can be improved)
   trace_ret_start();
-
-  // trace cmp to get mutation target
-  trace_cmp_start();
 
   fprintf(stdout, "[INF] Starting program instrumentation...\n");
   PIN_StartProgram();

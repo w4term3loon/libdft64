@@ -38,7 +38,6 @@ struct tf_hook_ctx_t {
 
 // Global logger instance
 #include "logger.h"
-static Logger logger;
 
 // --- Generic Hook Callbacks ---
 static void
@@ -65,6 +64,24 @@ generic_pre(tf_hook_ctx_t *ctx) {
   // SINK
   if (flags & IO_SINK) {
     LOG_DEBUG("T%d: Found sink: %s", ctx->tid, ctx->name.c_str());
+
+    // for strcmp like function based on cmp string
+    if (ctx->name.find("cmp") != std::string::npos){
+      char *dst = (char *)ctx->arg_val[0];
+      char *src = (char *)ctx->arg_val[1];
+      int taint_dst = 0;
+      int taint_src = 0;
+      if (tf_region_check((void *)dst, strlen(dst))){
+        taint_dst = 1;
+      }
+      if (tf_region_check((void *)src, strlen(src))){
+        taint_src = 1;
+      }
+      if (taint_src || taint_dst){
+        logger.store_cmp_pre(TT_CMP, dst, src, taint_dst, taint_src);
+        trace_cmp_start();
+      }
+    }
 
     // iterate over argument values
     for (size_t i = 0; i < ctx->arg_val.size(); i++) {
