@@ -103,7 +103,7 @@ guess_argument_type(ADDRINT value) {
 
   // check for small integers
   if (value <= 0xFFFF) { // 16-bit range
-    if (value <= 10) {
+    if (value <= 8) {
       // very small values are often file descriptors
       return FD_ARG;
     } else if (value <= 65536) {

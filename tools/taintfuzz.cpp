@@ -41,51 +41,19 @@ post_free_hook(tf_hook_ctx_t *ctx) {
 int
 main(int argc, char **argv) {
 
-  /*probe_ctx_t pc = {"libc", (match_func)[](std::string str1, std::string str2) {*/
-  /*                    return (str1.find(str2) != std::string::npos);*/
-  /*                  }};*/
+  tf_init(argc, argv);
 
-  PIN_InitSymbols();
-  if (PIN_Init(argc, argv)) {
-    fprintf(stderr, "[ERR] PIN_Init failed: %s\n", PIN_ToolFullPath());
-    goto err;
-  }
+  // register library
+  tf_register_all("libc");
 
-  func_tls_key = PIN_CreateThreadDataKey(NULL); // Pass destructor if needed
-  if (func_tls_key == INVALID_TLS_KEY) {
-    fprintf(stderr, "[ERR] Cannot allocate TLS key.\n");
-    goto err;
-  }
-
-  if (libdft_init() != 0) {
-    fprintf(stderr, "[ERR] Failed to initialize libdft.\n");
-    goto err;
-  }
-
-  // init mem
-  tf_mem_init();
-
-  // register all generic hooks
-  tf_register_all();
-
-  // register hooks manually
+  // override hooks manually
   tf_override_func("free", pre_free_hook, post_free_hook);
-
-  IMG_AddInstrumentFunction(tf_instrument_img, (VOID *)"libc");
-
-  // register Fini function to be called when the application exits
-  PIN_AddFiniFunction(fini, 0);
 
   // for uaf detection, we check each time ret, if there is uaf tracing, stop it. (can be improved)
   trace_ret_start();
 
-  fprintf(stdout, "[INF] Starting program instrumentation...\n");
-  PIN_StartProgram();
+  tf_start();
 
   return EXIT_SUCCESS;
-
-err:
-  fprintf(stderr, "[ERR] Tool initialization failed. Exiting.\n");
-  return EXIT_FAILURE;
 }
 

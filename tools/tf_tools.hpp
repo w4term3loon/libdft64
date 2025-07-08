@@ -66,18 +66,18 @@ generic_pre(tf_hook_ctx_t *ctx) {
     LOG_DEBUG("T%d: Found sink: %s", ctx->tid, ctx->name.c_str());
 
     // for strcmp like function based on cmp string
-    if (ctx->name.find("cmp") != std::string::npos){
+    if (ctx->name.find("cmp") != std::string::npos) {
       char *dst = (char *)ctx->arg_val[0];
       char *src = (char *)ctx->arg_val[1];
       int taint_dst = 0;
       int taint_src = 0;
-      if (tf_region_check((void *)dst, strlen(dst))){
+      if (tf_region_check((void *)dst, strlen(dst))) {
         taint_dst = 1;
       }
-      if (tf_region_check((void *)src, strlen(src))){
+      if (tf_region_check((void *)src, strlen(src))) {
         taint_src = 1;
       }
-      if (taint_src || taint_dst){
+      if (taint_src || taint_dst) {
         logger.store_cmp_pre(TT_CMP, dst, src, taint_dst, taint_src);
         trace_cmp_start();
       }
@@ -285,7 +285,9 @@ struct hook_t {
   func_cb_t post;
 };
 
+using library_t = std::pair<std::string, std::map<std::string, hook_t> *>;
 static std::map<std::string, hook_t> tf_func_registry;
+static library_t tf_library;
 
 void
 tf_override_func(std::string name, func_cb_t pre, func_cb_t post) {
@@ -317,8 +319,10 @@ tf_register_func(sig_entry_t *sig, func_cb_t pre, func_cb_t post) {
 }
 
 void
-tf_register_all() {
-  LOG_INFO("Registering all functions from signature table");
+tf_register_all(std::string library) {
+  LOG_INFO("Registering all functions from %s", library.c_str());
+  tf_library = library_t(library, &tf_func_registry);
+
   for (sig_entry_t &s : tf_sig_table) {
     tf_register_func(&s, generic_pre, generic_post);
   }
@@ -529,7 +533,7 @@ tf_instrument_rtn(
 }
 
 static VOID
-tf_instrument_img(IMG img, VOID *lib) {
+tf_instrument_img(IMG img, VOID *) {
   // invalid
   if (!IMG_Valid(img)) {
     LOG_ERROR("Attempted to process invalid image");
@@ -537,7 +541,7 @@ tf_instrument_img(IMG img, VOID *lib) {
   }
 
   // not the target library
-  if (IMG_Name(img).find((const char *)lib) == std::string::npos) {
+  if (IMG_Name(img).find(tf_library.first.c_str()) == std::string::npos) {
     return;
   }
 
@@ -581,6 +585,40 @@ fini(INT32 code, VOID *v) {
   tf_mem_die();
   libdft_die();
   LOG_INFO("Cleanup completed.");
+}
+
+void
+tf_init(int argc, char **argv) {
+  PIN_InitSymbols();
+  if (PIN_Init(argc, argv)) {
+    fprintf(stderr, "[ERR] PIN_Init failed: %s\n", PIN_ToolFullPath());
+    exit(1);
+  }
+
+  func_tls_key = PIN_CreateThreadDataKey(NULL); // Pass destructor if needed
+  if (func_tls_key == INVALID_TLS_KEY) {
+    fprintf(stderr, "[ERR] Cannot allocate TLS key.\n");
+    exit(1);
+  }
+
+  if (libdft_init() != 0) {
+    fprintf(stderr, "[ERR] Failed to initialize libdft.\n");
+    exit(1);
+  }
+
+  // init mem
+  tf_mem_init();
+}
+
+void
+tf_start() {
+  IMG_AddInstrumentFunction(tf_instrument_img, nullptr);
+
+  // register Fini function to be called when the application exits
+  PIN_AddFiniFunction(fini, 0);
+
+  fprintf(stdout, "[INF] Starting program instrumentation...\n");
+  PIN_StartProgram();
 }
 
 #endif // !TF_TOOLS_H
