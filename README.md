@@ -111,7 +111,8 @@ pin -t obj-intel64/taintfuzz.so -- /bin/ls
 
 The produced log verifies that the tool finds all `libc` functions (we registered `libc`) and do not contain any alarming events that would suggest that the binary piped tainted source data to sinks.
 
-[!IMPORTANT] Archive of the original Angora repository
+ > [!IMPORTANT]
+ > Archive of the original Angora repository
 
 ## News
 - Update Pin version: pin-3.20-98437-gf02b61307-gcc-linux
@@ -145,7 +146,8 @@ As [TaintInduce](https://taintinduce.github.io/) mentioned, libdft exists the so
 
 If you want to contribute to this, modify the instructions in `src/libdft_core.cpp`, and pull requests on github for us.
 
-[!IMPORTANT] Archive of the original libdtf repository
+ > [!IMPORTANT]
+ > Archive of the original libdtf repository
 ## Introduction
    Dynamic data flow tracking (DFT) deals with the tagging and tracking of
 "interesting" data as they propagate during program execution. DFT has been
