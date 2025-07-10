@@ -40,7 +40,7 @@ def classify_function(cursor):
 
     # Classification logic:
     # IO_SRC: Functions that can produce data (non-const ptr args or ptr return)
-    # IO_SINK: Functions that can consume data (const ptr inputs)
+    # IO_SINK: Functions that can consume data (const ptr inputs)  
     # NO_IO: Functions with no pointer arguments or returns
 
     flags = []

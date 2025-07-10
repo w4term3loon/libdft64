@@ -1,8 +1,13 @@
-# libdft: Practical Dynamic Data Flow Tracking
+# libdft64 - Dynamic Data Flow Tracking with TaintFuzz for guided fuzzing
 
-These code is modified from [VUzzer64](https://github.com/vusec/vuzzer64), and it is originally from [libdft](https://www.cs.columbia.edu/~vpk/research/libdft/).
+[!NOTE]: These code is modified from [AngoraFuzzer/libdft64](https://github.com/AngoraFuzzer/libdft64), and it is originally from [libdft](https://www.cs.columbia.edu/~vpk/research/libdft/).
 
-## News 
+A fast, reusable dynamic data flow tracking (DFT) framework for Intel Pin 3.x and 64-bit platforms, enhanced with TaintFuzz functionality for intelligent fuzzing based on taint analysis.
+
+## Overview
+libdft64 is a dynamic data flow tracking framework that provides comprehensive taint analysis capabilities for binary only targets. This enhanced version includes TaintFuzz functionality, which combines dynamic taint analysis at function level with fuzzing to identify critical input regions that affect program execution paths and potential vulnerabilities.
+
+## News
 - Update Pin version: pin-3.20-98437-gf02b61307-gcc-linux
 - Test in ubuntu 20.04
 
@@ -17,13 +22,14 @@ These code is modified from [VUzzer64](https://github.com/vusec/vuzzer64), and i
 - Byte level
 - Ignore implicit flows
 - Ignore eflags registers
+- Naive heuristics for parameter inference
 
 ## TODO
 - [ ] ternary instructions
 - [ ] performance optimization
 - [ ] support more instructions
 - [ ] test for each instruction
-- [ ] rules for eflags registers 
+- [ ] rules for eflags registers
 - [ ] FPU instructions
 
 ## Contributing guidance
@@ -33,30 +39,110 @@ As [TaintInduce](https://taintinduce.github.io/) mentioned, libdft exists the so
 
 If you want to contribute to this, modify the instructions in `src/libdft_core.cpp`, and pull requests on github for us.
 
-## Build 
+## Build
 
-- Download Intel Pin 3.x and set PIN_ROOT to Pin's directory.
-
+### Build in docker container (Suggested)
 ```sh
-PREFIX=/path-to-install ./install_pin.sh
-```
-- build libdft64
-```
-make
+make run
 ```
 
-## Docker
-```
-docker build -t libdft ./
-docker run --privileged -v /path-to-dir:/data -it --rm libdft /bin/bash
+### Build project and tool
+```sh
+make all
+cd tools && make obj-intel64/taintfuzz.so
 ```
 
 ## Test
-See tools/mini_test.cpp & tools/track.cpp for more defails
+
+```sh
+cd tools
+make stest
+make dtest
 ```
-cd tools;
-make test_mini
+
+## Installation
+
+- Download Intel Pin 3.x and set PIN_ROOT to Pin's directory.
+- GCC compiler
+- GNU Make
+- Ubuntu 20.04 (tested) or compatible Linux distribution
+
+```sh
+PREFIX=/path-to-install ./install_pin.sh
+export PIN_ROOT=/path/to/pin
 ```
+
+## Library substitution
+
+First of all to generate the stubs for a new library, its header needs to be feeded to the `gen_sig.py` script:
+```sh
+./gen_sig.py /usr/include/stdlib.h -o test.inc
+```
+
+We tested the generation process on some of the Linux libraries:
+```sh
+root@3cd5528b70be:/libdft# ./gen_sig.py /usr/include/string.h -o string.inc
+Processing /usr/include/string.h...
+
+Processed 51 unique functions:
+  IO_SINK: 14
+  IO_SRC: 3
+  IO_SRC|IO_SINK: 31
+  NO_IO: 3
+
+Output written to string.inc
+root@3cd5528b70be:/libdft# ./gen_sig.py /usr/include/stdio.h -o stdio.inc
+Processing /usr/include/stdio.h...
+
+Processed 84 unique functions:
+  IO_SINK: 13
+  IO_SRC: 1
+  IO_SRC|IO_SINK: 66
+  NO_IO: 4
+
+Output written to stdio.inc
+root@3cd5528b70be:/libdft# ./gen_sig.py /usr/include/time.h -o time.inc
+Processing /usr/include/time.h...
+
+Processed 30 unique functions:
+  IO_SINK: 1
+  IO_SRC|IO_SINK: 23
+  NO_IO: 6
+
+Output written to time.inc
+root@3cd5528b70be:/libdft# ./gen_sig.py /usr/include/regex.h -o regex.inc
+Processing /usr/include/regex.h...
+
+Processed 6 unique functions:
+  IO_SINK: 1
+  IO_SRC|IO_SINK: 5
+
+Output written to regex.inc
+```
+
+After this, in the `tf_gen.hpp` file, the generated stubs need to be included:
+```c
+#define GENERATED_SIGS "tf_std_sig.inc"
+```
+
+and in the main taintfuzz.cpp tool the library needs to be substituted:
+```c
+tf_register_all("test");
+```
+
+In the taintfuzz tool, the name that is registered in the main function is fuzzy seached in the section names.
+
+## Instrumenting arbitrary binaries
+
+The taintfuzz pintool can instrument any binary as long as the registered library relevant. In this example we instrument a binary found in almost all Linux systems: `/bin/ls`. The following commands presume a running docker context after a successful `make run` command from the root directory:
+```sh
+cd tools
+pin -t obj-intel64/taintfuzz.so -- /bin/ls
+```
+
+The produced log verifies that the tool finds all `libc` functions (we registered `libc`) and do not contain any alarming events that would suggest that the binary piped tainted source data to sinks.
+
+[!IMPORTANT] Archive of the original libdtf repository
 
 ## Introduction
    Dynamic data flow tracking (DFT) deals with the tagging and tracking of
