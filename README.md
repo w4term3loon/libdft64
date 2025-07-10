@@ -134,6 +134,10 @@ The produced log verifies that the tool finds all `libc` functions (we registere
 - Ignore eflags registers
 - Naive heuristics for parameter inference
 
+## Fuzzer part
+
+!(README of fuzzer)[https://github.com/w4term3loon/libdft64/blob/master/taintfuzz/README.md]
+
 ## TODO
 - [ ] ternary instructions
 - [ ] performance optimization
