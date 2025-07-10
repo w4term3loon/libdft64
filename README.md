@@ -1,6 +1,7 @@
 # libdft64 - Dynamic Data Flow Tracking with TaintFuzz for guided fuzzing
 
-[!NOTE]: These code is modified from [AngoraFuzzer/libdft64](https://github.com/AngoraFuzzer/libdft64), and it is originally from [libdft](https://www.cs.columbia.edu/~vpk/research/libdft/).
+ > [!NOTE]
+ > These code is modified from [AngoraFuzzer/libdft64](https://github.com/AngoraFuzzer/libdft64), and it is originally from [libdft](https://www.cs.columbia.edu/~vpk/research/libdft/).
 
 A fast, reusable dynamic data flow tracking (DFT) framework for Intel Pin 3.x and 64-bit platforms, enhanced with TaintFuzz functionality for intelligent fuzzing based on taint analysis.
 
