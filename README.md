@@ -9,27 +9,30 @@ A fast, reusable dynamic data flow tracking (DFT) framework for Intel Pin 3.x an
 libdft64 is a dynamic data flow tracking framework that provides comprehensive taint analysis capabilities for binary only targets. This enhanced version includes TaintFuzz functionality, which combines dynamic taint analysis at function level with fuzzing to identify critical input regions that affect program execution paths and potential vulnerabilities.
 
 ## Build
+We suggest building the project from docker. This eliminates the bugs arising from the platform specificness of the Intel pintool. We also set up everything inside the image and hook up the pintool as intended by design.
 
-### Build in docker container (Suggested)
 ```sh
+# docker setup
 make run
-```
 
-### Build project and tool
-```sh
+# build tool
 make all
-cd tools && make obj-intel64/taintfuzz.so
 ```
 
 ## Test
 
+We have 2 main tests that we used during development:
 ```sh
 cd tools
 make stest
 make dtest
 ```
 
+`dtest` is a very simple test that makes sure that the instrumentation works and `stest` is a bit more complicated to check if the tool successfully identifies the potential issues in the binary.
+
 ## Installation
+
+The docker container does this out of the box, but if someone wants to build on their machine:
 
 - Download Intel Pin 3.x and set PIN_ROOT to Pin's directory.
 - GCC compiler
@@ -42,13 +45,13 @@ export PIN_ROOT=/path/to/pin
 ```
 
 ## Library substitution
+First of all, to generate the stubs for a new library, its header needs to be feeded to the `gen_sig.py` script:
 
-First of all to generate the stubs for a new library, its header needs to be feeded to the `gen_sig.py` script:
 ```sh
 ./gen_sig.py /usr/include/stdlib.h -o test.inc
 ```
 
-We tested the generation process on some of the Linux libraries:
+We tested the generation process on the following Linux libraries:
 ```sh
 root@3cd5528b70be:/libdft# ./gen_sig.py /usr/include/string.h -o string.inc
 Processing /usr/include/string.h...
@@ -89,24 +92,24 @@ Processed 6 unique functions:
 Output written to regex.inc
 ```
 
-After this, in the `tf_gen.hpp` file, the generated stubs need to be included:
+After the generation, the generated stubs need to be included in the `tf_gen.hpp` file:
 ```c
 #define GENERATED_SIGS "tf_std_sig.inc"
 ```
 
-and in the main taintfuzz.cpp tool the library needs to be substituted:
+and in the main `taintfuzz.cpp` tool the library needs to be registered:
 ```c
 tf_register_all("test");
 ```
 
-In the taintfuzz tool, the name that is registered in the main function is fuzzy seached in the section names.
+In the taintfuzz tool, the name that is registered in the main function is fuzzy searched in the section names.
 
 ## Instrumenting arbitrary binaries
 
-The taintfuzz pintool can instrument any binary as long as the registered library relevant. In this example we instrument a binary found in almost all Linux systems: `/bin/ls`. The following commands presume a running docker context after a successful `make run` command from the root directory:
+The taintfuzz pintool can instrument any binary as long as the registered library is relevant. In this example we instrument a binary found in almost all Linux systems: `/bin/ls`. The following commands presume a running docker context after a successful `make run` command from the root directory:
 ```sh
 cd tools
-pin -t obj-intel64/taintfuzz.so -- /bin/ls
+pin -t tools/obj-intel64/taintfuzz.so -- /bin/ls
 ```
 
 The produced log verifies that the tool finds all `libc` functions (we registered `libc`) and do not contain any alarming events that would suggest that the binary piped tainted source data to sinks.
