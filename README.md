@@ -7,38 +7,6 @@ A fast, reusable dynamic data flow tracking (DFT) framework for Intel Pin 3.x an
 ## Overview
 libdft64 is a dynamic data flow tracking framework that provides comprehensive taint analysis capabilities for binary only targets. This enhanced version includes TaintFuzz functionality, which combines dynamic taint analysis at function level with fuzzing to identify critical input regions that affect program execution paths and potential vulnerabilities.
 
-## News
-- Update Pin version: pin-3.20-98437-gf02b61307-gcc-linux
-- Test in ubuntu 20.04
-
-## Features
-
-- Support Intel Pin 3.x
-- Support Intel 64 bit platform
-- Support basic SSE, AVX instructions.
-- Use BDD data structure described in [Angora][3]'s paper.
-
-## Limitation of our taint propagation rules
-- Byte level
-- Ignore implicit flows
-- Ignore eflags registers
-- Naive heuristics for parameter inference
-
-## TODO
-- [ ] ternary instructions
-- [ ] performance optimization
-- [ ] support more instructions
-- [ ] test for each instruction
-- [ ] rules for eflags registers
-- [ ] FPU instructions
-
-## Contributing guidance
-As [TaintInduce](https://taintinduce.github.io/) mentioned, libdft exists the soundness and completeness probelm.
-- The taint propagation rules may be wrong.
-- It only supports the basic instructions, and there are many other instructions it need to support.
-
-If you want to contribute to this, modify the instructions in `src/libdft_core.cpp`, and pull requests on github for us.
-
 ## Build
 
 ### Build in docker container (Suggested)
@@ -142,8 +110,41 @@ pin -t obj-intel64/taintfuzz.so -- /bin/ls
 
 The produced log verifies that the tool finds all `libc` functions (we registered `libc`) and do not contain any alarming events that would suggest that the binary piped tainted source data to sinks.
 
-[!IMPORTANT] Archive of the original libdtf repository
+[!IMPORTANT] Archive of the original Angora repository
 
+## News
+- Update Pin version: pin-3.20-98437-gf02b61307-gcc-linux
+- Test in ubuntu 20.04
+
+## Features
+
+- Support Intel Pin 3.x
+- Support Intel 64 bit platform
+- Support basic SSE, AVX instructions.
+- Use BDD data structure described in [Angora][3]'s paper.
+
+## Limitation of our taint propagation rules
+- Byte level
+- Ignore implicit flows
+- Ignore eflags registers
+- Naive heuristics for parameter inference
+
+## TODO
+- [ ] ternary instructions
+- [ ] performance optimization
+- [ ] support more instructions
+- [ ] test for each instruction
+- [ ] rules for eflags registers
+- [ ] FPU instructions
+
+## Contributing guidance
+As [TaintInduce](https://taintinduce.github.io/) mentioned, libdft exists the soundness and completeness probelm.
+- The taint propagation rules may be wrong.
+- It only supports the basic instructions, and there are many other instructions it need to support.
+
+If you want to contribute to this, modify the instructions in `src/libdft_core.cpp`, and pull requests on github for us.
+
+[!IMPORTANT] Archive of the original libdtf repository
 ## Introduction
    Dynamic data flow tracking (DFT) deals with the tagging and tracking of
 "interesting" data as they propagate during program execution. DFT has been
