@@ -3,7 +3,7 @@
 
 // signature description file
 #include <stdint.h>
-#define GENERATED_SIGS "tf_std_sig.inc"
+#define GENERATED_SIGS "tf_stub.inc"
 
 #define FUNCTION_ARG_LIMIT 6
 enum io_flag_t { IO_SRC = 1 << 0, IO_SINK = 1 << 1, NO_IO = 1 << 2 };

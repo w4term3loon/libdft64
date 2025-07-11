@@ -12,6 +12,7 @@ RUN dpkg --add-architecture i386 && \
     apt-get update && \
     apt-get -y upgrade && \
     DEBIAN_FRONTEND="noninteractive" apt-get -y install --no-install-recommends \
+        time \
         ca-certificates \
         build-essential \
         gcc-multilib \
@@ -43,10 +44,10 @@ RUN mkdir -p ${PIN_INSTALL_DIR} && \
     echo "* Pin tool installed at ${PIN_ROOT}"
 
 # install compiledb
-RUN echo "* Installing compiledb via pip" && \
-    pip3 install compiledb && \
+RUN echo "* Installing clang via pip" && \
     pip3 install clang==10.0.1 && \
-    echo "* compiledb installed successfully."
+    pip3 install psutil && \
+    echo "* clang installed successfully."
 
 # add libclang to path
 RUN ln -s /usr/lib/x86_64-linux-gnu/libclang-10.so.1 /usr/lib/x86_64-linux-gnu/libclang.so

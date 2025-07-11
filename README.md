@@ -48,53 +48,43 @@ export PIN_ROOT=/path/to/pin
 First of all, to generate the stubs for a new library, its header needs to be feeded to the `gen_sig.py` script:
 
 ```sh
-./gen_sig.py /usr/include/stdlib.h -o test.inc
+./gen_sig.py /usr/include/target.h -o gen/test.inc
 ```
 
 We tested the generation process on the following Linux libraries:
 ```sh
-root@3cd5528b70be:/libdft# ./gen_sig.py /usr/include/string.h -o string.inc
-Processing /usr/include/string.h...
-
+root@3cd5528b70be:/libdft# ./gen_sig.py /usr/include/string.h -o gen/string.inc
 Processed 51 unique functions:
   IO_SINK: 14
   IO_SRC: 3
   IO_SRC|IO_SINK: 31
   NO_IO: 3
-
-Output written to string.inc
-root@3cd5528b70be:/libdft# ./gen_sig.py /usr/include/stdio.h -o stdio.inc
-Processing /usr/include/stdio.h...
-
+root@3cd5528b70be:/libdft# ./gen_sig.py /usr/include/stdio.h -o gen/stdio.inc
 Processed 84 unique functions:
   IO_SINK: 13
   IO_SRC: 1
   IO_SRC|IO_SINK: 66
   NO_IO: 4
-
-Output written to stdio.inc
-root@3cd5528b70be:/libdft# ./gen_sig.py /usr/include/time.h -o time.inc
-Processing /usr/include/time.h...
-
+root@3cd5528b70be:/libdft# ./gen_sig.py /usr/include/time.h -o gen/time.inc
 Processed 30 unique functions:
   IO_SINK: 1
   IO_SRC|IO_SINK: 23
   NO_IO: 6
-
-Output written to time.inc
-root@3cd5528b70be:/libdft# ./gen_sig.py /usr/include/regex.h -o regex.inc
-Processing /usr/include/regex.h...
-
+root@3cd5528b70be:/libdft# ./gen_sig.py /usr/include/regex.h -o gen/regex.inc
 Processed 6 unique functions:
   IO_SINK: 1
   IO_SRC|IO_SINK: 5
-
-Output written to regex.inc
 ```
 
-After the generation, the generated stubs need to be included in the `tf_gen.hpp` file:
+After the generation, the generated stubs will be included in the `tf_gen.hpp` file as:
 ```c
-#define GENERATED_SIGS "tf_std_sig.inc"
+#define GENERATED_SIGS "tf_stub.inc"
+```
+
+We used a symbolic link to swap between used libraries:
+```sh
+rm tools/tf_stub.inc
+ln -s gen/test.inc tools/tf_stub.inc
 ```
 
 and in the main `taintfuzz.cpp` tool the library needs to be registered:
@@ -113,6 +103,9 @@ pin -t tools/obj-intel64/taintfuzz.so -- /bin/ls
 ```
 
 The produced log verifies that the tool finds all `libc` functions (we registered `libc`) and do not contain any alarming events that would suggest that the binary piped tainted source data to sinks.
+
+## Misc
+Measurements made on the efficiency of the pintool were carried out by the `tools/test.sh` script and evaluated by the `tools/artifacts/eval.py`. The raw data can be found in this same folder.
 
  > [!IMPORTANT]
  > Archive of the original Angora repository
