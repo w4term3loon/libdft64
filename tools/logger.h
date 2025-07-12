@@ -12,6 +12,8 @@ typedef uint64_t u64;
 
 #define BUF_LEN (2 << 16)
 
+ADDRINT len_addr = 0;
+
 typedef enum {
   TT_EXEC = 0,        //< command injection.
   TT_UAF = 1, //use after free
@@ -33,7 +35,7 @@ private:
 
 public:
   void push_bytes(char *bytes, std::size_t size) {
-    if (size > 0 && bytes) {
+    if (size > 0) {
       size_t next = len + size;
       if (next > cap) {
         cap *= 2;
@@ -46,7 +48,7 @@ public:
 
   void insert_bytes(char *bytes, std::size_t size) {
     memset(buffer, 0, len);
-    if (size > 0 && bytes) {
+    if (size > 0) {
       size_t next = size;
       if (next > cap) {
         cap *= 2;
@@ -57,8 +59,12 @@ public:
     }
   };
 
-  int read(int size){
-    return (int)*(buffer+size);
+  u32 read(int size){
+    return (u32)*(buffer+size);
+  }
+
+  int read_len(){
+    return len;
   }
 
   char* read_all(){
@@ -200,7 +206,7 @@ public:
         if (ctx->arg_val[i] >= total_start[j] && ctx->arg_val[i] <= total_end[j] && (int)ctx->arg_val[i] > 0) {
           size += strlen((char *)ctx->arg_val[i]);
         }
-        //fprintf(stdout, "args size: %d\n", size);
+        // fprintf(stdout, "args size: %d\n", size);
       }
       char args[size];
       memset(args, 0, size);
@@ -227,6 +233,17 @@ public:
     
   }
 
+  bool check_scope(ADDRINT val){
+    int j = 0;
+    while(val >= total_end[j] && j < (int)(total_end.size()-1)){
+      j++;
+    }
+    if (val >= total_start[j] && val <= total_end[j] && (int)val > 0) {
+      return true;
+    }
+    return false;
+  }
+
   void store_ins(taint_type_t type, ADDRINT dst){
     if (type == TT_UAF && order_map.count(dst) == 0 && num_uaf == 0){
       num_uaf = 1;
@@ -236,33 +253,46 @@ public:
 
   void store_cmp_ins(taint_type_t type, ADDRINT addr){
     auto result = order_map.find(addr);
+    fprintf(stdout, "cmp ins: %ld", addr);
     tag = result->second;
-    int len_dst = cmp_buf_pre.read(4);
-    int len_src = cmp_buf_pre.read(4+len_dst);
-    int len = len_dst;
+    u32 len_dst = cmp_buf_pre.read(0);
+    u32 len_src = cmp_buf_pre.read(len_dst);
+    u32 len = len_dst;
     if (len_src < len){
       len = len_src;
     }
+    // fprintf(stdout, "tag: %d", tag);
     int res = cmp_buf_pre.cmp(4, 8+len_dst, len);
-    if(order_map.count(addr)){
-      if (tag != 2 && tag != res){
-        char *buf = cmp_buf_pre.read_all();
-        cmp_buf.insert_bytes(buf, strlen(buf));
-        cmp_addr = addr;
-        cmp_res = res;
-        num_cmp = 1;
-        // order_map.erase(addr);
-        // order_map.insert(std::pair<u64, u32>(addr, 2));
-      }
+    // fprintf(stdout, "tag1: %d, res: %d", tag, res);
+    if (res != 0){
+      res = 1;
     }
     else{
+      res = 0;
+    }
+    // fprintf(stdout, "tag: %d, res: %d", tag, res);
+    if (tag != 2 && tag != res){
       char *buf = cmp_buf_pre.read_all();
-      cmp_buf.insert_bytes(buf, strlen(buf));
+      fprintf(stdout, "cmp addr: %s", buf);
+      cmp_buf.insert_bytes(buf, cmp_buf_pre.read_len());
       cmp_addr = addr;
       cmp_res = res;
-      // order_map.insert(std::pair<u64, u32>(addr, res));
       num_cmp = 1;
+      // order_map.erase(addr);
+      // order_map.insert(std::pair<u64, u32>(addr, 2));
     }
+    else{
+      num_cmp = 0;
+    }
+    // else if (tag == 0){
+    //   char *buf = cmp_buf_pre.read_all();
+    //   fprintf(stdout, "cmp addr: %s", buf);
+    //   cmp_buf.insert_bytes(buf, cmp_buf_pre.read_len());
+    //   cmp_addr = addr;
+    //   cmp_res = res;
+    //   // order_map.insert(std::pair<u64, u32>(addr, res));
+    //   num_cmp = 1;
+    // }
   }
 
   void save(){
@@ -284,15 +314,27 @@ public:
   }
 
   void store_cmp_pre(taint_type_t type, char *dst, char *src, int taint_dst, int taint_src){
-    int len_dst = strlen(dst);
-    int len_src = strlen(src);
+    int len_dst = 0;
+    int len_src = 0;
+    if (tf_mem_get_size((void *) dst) == 0) {
+      len_dst = strlen(dst);
+    }
+    else{
+      len_dst = tf_mem_get_size((void *) dst);
+    }
+    if (tf_mem_get_size((void *) src) == 0) {
+      len_src = strlen(src);
+    }
+    else{
+      len_src = tf_mem_get_size((void *) src);
+    }
+    len_addr = len_src * 10 + taint_src;
     cmp_buf_pre.insert_bytes((char *)&len_dst, 4);
-    cmp_buf_pre.push_bytes(dst, strlen(dst));
+    cmp_buf_pre.push_bytes(dst, len_dst);
     cmp_buf_pre.push_bytes((char *)&len_src, 4);
-    cmp_buf_pre.push_bytes(src, strlen(src));
+    cmp_buf_pre.push_bytes(src, len_src);
     cmp_buf_pre.push_bytes((char *)&taint_dst, 1);
     cmp_buf_pre.push_bytes((char *)&taint_src, 1);
-    fprintf(stdout, "strcmp: %s\n", cmp_buf_pre.read_all());
   }
 
   void save_buffers() {
@@ -320,9 +362,12 @@ public:
     exec_buf.write_file(out_f);
     bof_buf.write_file(out_f);
     unknown_buf.write_file(out_f);
+    if (strlen(cmp_buf_pre.read_all()) > 0 && num_cmp == 0){
+      num_cmp = 1;
+      store_cmp_ins(TT_CMP, len_addr);
+    }
     fwrite(&num_cmp, 4, 1, out_f);
     cmp_buf.write_file(out_f);
-    fprintf(stdout, "cmp_buf: %s\n", cmp_buf_pre.read_all());
     save();
     
 
@@ -334,6 +379,10 @@ public:
 };
 
 static Logger logger;
+
+ADDRINT low_address = 0;
+ADDRINT high_address = 0;
+ADDRINT call_addr = 0;
 
 // uaf taint map
 tag_dir_t uaf_dir;
@@ -405,12 +454,16 @@ ins_desc_t ins_desc[XED_ICLASS_LAST];
 void
 trace_uaf(INS ins);// actual trace for logging
 
+static void trace_ret_start();
+
 void
 trace_uaf_start() {// a start function to implement trace uaf
   xed_iclass_enum_t ins_indx;
   ins_indx = XED_ICLASS_MOV;
-  if (unlikely(ins_desc[ins_indx].pre == NULL))
+  if (unlikely(ins_desc[ins_indx].pre == NULL)){
     ins_desc[ins_indx].pre = trace_uaf;
+    trace_ret_start();
+  }
 }
 
 void
@@ -428,6 +481,36 @@ uaf(ADDRINT dst) {// check taint and log
     logger.store_ins(TT_UAF, dst);
     trace_uaf_stop();
   }
+}
+
+static void
+unknown_func(ADDRINT a0, ADDRINT a1, ADDRINT a2, ADDRINT a3, ADDRINT a4, ADDRINT a5){
+  tf_hook_ctx_t *func_ctx = (tf_hook_ctx_t*)malloc(sizeof(tf_hook_ctx_t));
+  std::vector<ADDRINT> args_ = {a0, a1, a2, a3, a4, a5};
+  func_ctx->func_addr = call_addr;
+  func_ctx->arg_val = args_;
+  logger.store(TT_UNKNOWN, func_ctx);
+}
+
+static void
+trace_call(INS ins) {
+  if (INS_IsDirectControlFlow(ins)){
+    call_addr = INS_DirectBranchOrCallTargetAddress(ins);
+    // fprintf(stdout, "[INF] call_addr: %ld\n", call_addr);
+    if (call_addr < low_address){
+      INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)unknown_func, IARG_FUNCARG_CALLSITE_VALUE, 0, IARG_FUNCARG_CALLSITE_VALUE, 1, IARG_FUNCARG_CALLSITE_VALUE, 2, IARG_FUNCARG_CALLSITE_VALUE, 3, IARG_FUNCARG_CALLSITE_VALUE, 4, IARG_FUNCARG_CALLSITE_VALUE, 5, 
+                      IARG_END);
+    }
+  }
+  // TODO solve indirect call such as call rbx
+}
+
+static void
+trace_call_start(){
+  xed_iclass_enum_t ins_indx;
+  ins_indx = XED_ICLASS_CALL_NEAR;
+  if (unlikely(ins_desc[ins_indx].pre == NULL))
+    ins_desc[ins_indx].pre = trace_call;
 }
 
 void
@@ -453,8 +536,8 @@ trace_cmp_stop(){// a stop function for stopping trace cmp
 static void
 trace_cmp(INS ins){//log cmp instruction address
   if (INS_OperandIsReg(ins, 0) && INS_OperandIsImmediate(ins, 1)) {
-    ADDRINT addr = INS_Address(ins);
-    logger.store_cmp_ins(TT_CMP, addr);
+    // addr = INS_Address(ins);
+    logger.store_cmp_ins(TT_CMP, len_addr);
   }
   trace_cmp_stop();
 }
@@ -472,6 +555,20 @@ trace_cmp_start(){// start trace cmp
 static void
 trace_ret(INS ins) {// after return, stop tracing uaf to reduce overload
   trace_uaf_stop();
+}
+
+void GetGot(IMG img, void* v)
+{
+  if (low_address != 0) return;// can only get got
+  SEC sec = IMG_SecHead(img);
+  while (SEC_Type(sec) != SEC_TYPE_GOT){
+    sec = SEC_Next(sec);
+    if (sec == SEC_Invalid()){
+      break;
+    }
+  }
+  low_address = SEC_Address(sec);
+  high_address = low_address + SEC_Size(sec);
 }
 
 static void

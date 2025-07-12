@@ -49,8 +49,10 @@ main(int argc, char **argv) {
   // override hooks manually
   tf_override_func("free", pre_free_hook, post_free_hook);
 
-  // for uaf detection, we check each time ret, if there is uaf tracing, stop it. (can be improved)
-  trace_ret_start();
+  // for basic syscall to increase the taint source 
+  hook_file_syscall();
+  // hook unknown functions that we did not generate inc
+  trace_call_start();
 
   tf_start();
 
