@@ -608,7 +608,7 @@ where
             let mut match_string = input.clone();
             let bytes = input.mutator_bytes_mut();
             let match_bytes = match_string.mutator_bytes_mut();
-            let match_iter = MatchIterator::new(&dst, match_bytes, AlgoSpec::HashMatch(2));
+            let match_iter = MatchIterator::new(&dst, match_bytes, AlgoSpec::HashMatch(2)).expect("no hash match");
             for m in match_iter {
                 // println!("match: {:?}: {:?}, dst: {:?}, src: {:?}", m.first_pos, m.first_end(), bytes, src);
                 if src.len() > m.first_end() - m.first_pos {
