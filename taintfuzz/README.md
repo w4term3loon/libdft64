@@ -10,6 +10,10 @@ The command to run fuzzer is `/path/to/taintfuzz -i /path/to/input -o /path/to/o
 
 If the parameter contains input file, the filename should be @@. 
 
+# Errors
+
+Due to the HashMatch, if there is no match string in original input and tainted variables. It will crash. Please rerun fuzzer. It would be fixed in later.
+
 # Key metrics
 
 <img width="1831" height="124" alt="image" src="https://github.com/user-attachments/assets/eb15143a-a474-44af-8702-2dd90c2e4346" />
