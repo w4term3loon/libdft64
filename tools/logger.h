@@ -486,7 +486,13 @@ uaf(ADDRINT dst) {// check taint and log
 static void
 unknown_func(ADDRINT a0, ADDRINT a1, ADDRINT a2, ADDRINT a3, ADDRINT a4, ADDRINT a5){
   tf_hook_ctx_t *func_ctx = (tf_hook_ctx_t*)malloc(sizeof(tf_hook_ctx_t));
-  std::vector<ADDRINT> args_ = {a0, a1, a2, a3, a4, a5};
+  std::vector<ADDRINT> args_;
+  args_.push_back(a0);
+  args_.push_back(a1);
+  args_.push_back(a2);
+  args_.push_back(a3);
+  args_.push_back(a4);
+  args_.push_back(a5);
   func_ctx->func_addr = call_addr;
   func_ctx->arg_val = args_;
   logger.store(TT_UNKNOWN, func_ctx);
